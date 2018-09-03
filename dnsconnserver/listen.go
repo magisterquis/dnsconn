@@ -9,7 +9,7 @@ package dnsconnserver
  * Listen/Accept side of dnscon
  * By J. Stuart McMurray
  * Created 20180822
- * Last Modified 20180901
+ * Last Modified 20180902
  */
 
 import (
@@ -80,7 +80,10 @@ type Config struct {
 	// NewListener, the value from DefaultConfig will be used.
 	TTL uint32
 
-	/* TODO: Work out when to close QueryHandleErrors */
+	// CacheSize controls the size of the cache which holds answers to
+	// previously answered queries.  Each question (not message) is cached
+	// individually.
+	CacheSize uint
 }
 
 // DefaultConfig is the Config used when nil is passed as the
@@ -91,6 +94,7 @@ var DefaultConfig = Config{
 	AcceptBacklog:     16,
 	ReceiveBufferSize: 2048,
 	TTL:               7200,
+	CacheSize:         1048576,
 }
 
 // Listener listens for new DNS stream connections.  It implements
@@ -99,6 +103,7 @@ type Listener struct {
 	pc    net.PacketConn /* Underlying PacketConn */
 	parse MessageParser  /* Custom unmarshal function */
 
+	ac answerCache         /* Cache for seen answers */
 	ds map[string]struct{} /* Domains to serve */
 	dl *sync.Mutex
 
@@ -122,11 +127,15 @@ func Listen(pc net.PacketConn, config *Config) (*Listener, error) {
 	if nil == config {
 		config = &DefaultConfig
 	}
+	if 0 == config.CacheSize {
+		config.CacheSize = DefaultConfig.CacheSize
+	}
 
 	/* Listener to return */
 	l := &Listener{
 		pc:     pc,
 		parse:  config.Parser,
+		ac:     newAnswerCache(config.CacheSize),
 		ds:     make(map[string]struct{}),
 		dl:     new(sync.Mutex),
 		accept: true,
@@ -313,18 +322,25 @@ func (l *Listener) process(buf []byte, ech chan<- QueryHandleError) {
 		err  error
 		p    dnsmessage.Parser
 	)
+
+	if nil != ech {
+		defer close(ech)
+	}
+
 	for {
 		/* Pop a packet */
 		n, addr, err = l.pc.ReadFrom(buf)
 
 		/* Process the data we have */
-		if 0 < n { /* TODO: Put all of this in a function */
+		if 0 < n {
 			/* Parse the query */
 			q, err := l.parseQuery(&p, buf[:n], addr)
+			/* If we already have an answer, send it back */
 			if nil != err {
 				handleQHE(ech, buf[:n], addr, err)
 				/* TODO: Have something return if the packet was too short so we can double the buffer for next time. */
 				/* TODO: Figure out how to tell if packet's too short */
+				/* TODO: Make buffer too small */
 				/* Send an error back if we have a channel */
 			} else {
 				/* Got a good query, take action */
@@ -348,7 +364,10 @@ func (l *Listener) process(buf []byte, ech chan<- QueryHandleError) {
 			/* Close the listener in a goroutine, so we don't have
 			to worry about a double-lock of l.cl */
 			go l.Close()
-			/* TODO: Propagate error to children */
+			/* Propagate error to children */
+			for _, c := range l.conns {
+				c.CloseError(err)
+			}
 			return
 		}
 	}
@@ -441,6 +460,12 @@ func (l *Listener) handleQuery(
 		qn.ans.Header.TTL = l.ttl
 		/* qn.ans.Body will be set below */
 
+		/* If we've answered this before, use the cached version */
+		qn.ans.Body = l.ac.Get(qn.q)
+		if nil != qn.ans.Body {
+			continue
+		}
+
 		/* MTNew (make a new Conn) doesn't require an existing conn */
 		if MTNew == qn.msg.Type {
 			handleQHE(ech, raw, addr, l.newConn(qn))
@@ -488,11 +513,12 @@ func (l *Listener) handleQuery(
 		handleQHE(ech, raw, addr, err)
 	}
 
-	/* Make sure all of the answers have Bodies */
+	/* Make sure all of the answers are cached and have Bodies */
 	for _, qn := range q.qs {
 		if nil == qn.ans.Body {
 			log.Panic("Unfilled body in ", qn.ans)
 		}
+		l.ac.Put(qn.q, qn.ans.Body)
 	}
 
 	/* Change header to be a response */
@@ -527,8 +553,6 @@ func (l *Listener) handleQuery(
 
 	return nil
 }
-
-/* TODO: Warn that the conns must be closed or there'll be data leakage */
 
 /* getConn gets the conn with ID id.  It also returns whether the conn was
 known. */
@@ -591,5 +615,3 @@ func handleQHE(
 	copy(e, raw)
 	ech <- QueryHandleError{e, addr, err}
 }
-
-/* TODO: make a cache for replies */

@@ -308,7 +308,7 @@ func (c *Conn) req(qn *question) error {
 	/* Reply to the question */
 	buf := make([]byte, n)
 	copy(buf, c.c2nBuf.Bytes())
-	qn.Push(buf, c.c2nIndex+n-1) /* TODO: Check for off-by-one */
+	qn.PutBytes(buf, ok) /* TODO: Check for off-by-one */
 
 	return nil
 }

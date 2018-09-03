@@ -5,7 +5,7 @@ package dnsconnserver
  * Test functions for query.go
  * By J. Stuart McMurray
  * Created 20180901
- * Last Modified 20180901
+ * Last Modified 20180902
  */
 
 import (
@@ -29,7 +29,7 @@ func TestMakeAAAA(t *testing.T) {
 
 func TestQuestion_PutUint(t *testing.T) {
 	stdQ := uint(0xabc123)
-	stdA := dnsmessage.MustNewName("17.abc123.com")
+	stdA := dnsmessage.MustNewName("17.LF0I6.com")
 	for _, tc := range []struct {
 		/* Have */
 		q  *question
@@ -97,7 +97,7 @@ func TestQuestion_PutUint(t *testing.T) {
 			n:  stdQ,
 			ok: true,
 			want: &dnsmessage.TXTResource{TXT: []string{
-				"11=abc123",
+				"11=q8Ej",
 			}},
 		},
 		{
@@ -107,7 +107,7 @@ func TestQuestion_PutUint(t *testing.T) {
 			n:  stdQ,
 			ok: false,
 			want: &dnsmessage.TXTResource{TXT: []string{
-				"10=abc123",
+				"10=q8Ej",
 			}},
 		},
 		{
@@ -125,7 +125,7 @@ func TestQuestion_PutUint(t *testing.T) {
 			n:  stdQ,
 			ok: false,
 			want: &dnsmessage.NSResource{
-				NS: dnsmessage.MustNewName("16.abc123.com"),
+				NS: dnsmessage.MustNewName("16.LF0I6.com"),
 			},
 		},
 		{
@@ -146,7 +146,7 @@ func TestQuestion_PutUint(t *testing.T) {
 			ok: true,
 			want: &dnsmessage.SOAResource{
 				NS:      stdA,
-				MBox:    stdA,
+				MBox:    rname,
 				Serial:  0,
 				Refresh: soaRefresh,
 				Retry:   soaRetry,
@@ -202,6 +202,124 @@ func TestQuestion_PutUint(t *testing.T) {
 			t.Errorf(
 				"Have: %v/%#02x/%v Got: %#v Want: %#v",
 				tc.q.q.Type, tc.n, tc.ok,
+				tc.q.ans.Body,
+				tc.want,
+			)
+		}
+	}
+}
+
+func TestQuestion_PutBytes(t *testing.T) {
+	for _, tc := range []struct {
+		/* Have */
+		q *question
+		b []byte
+
+		want dnsmessage.ResourceBody
+	}{
+		{
+			q: &question{q: dnsmessage.Question{
+				Type: dnsmessage.TypeA,
+			}},
+			b: []byte{0xab},
+			want: &dnsmessage.AResource{
+				A: [4]byte{AOk, 0x00, 0x00, 0xab},
+			},
+		},
+		{
+			q: &question{q: dnsmessage.Question{
+				Type: dnsmessage.TypeA,
+			}},
+			b: []byte{0xab, 0xcd, 0x12},
+			want: &dnsmessage.AResource{
+				A: [4]byte{AOk, 0xab, 0xcd, 0x12},
+			},
+		},
+		{
+			q: &question{q: dnsmessage.Question{
+				Type: dnsmessage.TypeAAAA,
+			}},
+			b: []byte{0x01},
+			want: &dnsmessage.AAAAResource{AAAA: [16]byte{
+				0x26, 0x07, 0xf8, 0xb0, 0x40, 0x04, 0x08, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+			}},
+		},
+		{
+			q: &question{q: dnsmessage.Question{
+				Type: dnsmessage.TypeAAAA,
+			}},
+			b: []byte{
+				0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+			},
+			want: &dnsmessage.AAAAResource{AAAA: [16]byte{
+				0x26, 0x07, 0xf8, 0xb0, 0x40, 0x04, 0x08, 0x00,
+				0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+			}},
+		},
+		{
+			q: &question{q: dnsmessage.Question{
+				Type: dnsmessage.TypeTXT,
+			}},
+			b: []byte("A"),
+			want: &dnsmessage.TXTResource{TXT: []string{
+				"11=QQ",
+			}},
+		},
+		{
+			q: &question{q: dnsmessage.Question{
+				Type: dnsmessage.TypeTXT,
+			}},
+			b: []byte("Beatus vir, qui non abiit in consilio " +
+				"impiorum et in via peccatorum non stetit " +
+				"et in conventu derisorum non sedit, sed in " +
+				"lege Domini voluntas eius, et in lege eius " +
+				"meditatur die ac nocte. "),
+			want: &dnsmessage.TXTResource{TXT: []string{
+				"11=QmVhdHVzIHZpciwgcXVpIG5vbiBhYmlpdCBpbiBj" +
+					"b25zaWxpbyBpbXBpb3J1bSBldCBpbiB2aWE" +
+					"gcGVjY2F0b3J1bSBub24gc3RldGl0IGV0IG" +
+					"luIGNvbnZlbnR1IGRlcmlzb3J1bSBub24gc" +
+					"2VkaXQsIHNlZCBpbiBsZWdlIERvbWluaSB2" +
+					"b2x1bnRhcyBlaXVzLCBldCBpbiBsZWdlIGV" +
+					"pdXMgbWVkaXRhdHVyIGRpZSBhYyBub2N0ZS" +
+					"4g",
+			}},
+		},
+		{
+			q: &question{q: dnsmessage.Question{
+				Type: dnsmessage.TypeNS,
+			}},
+			b: []byte("A"),
+			want: &dnsmessage.NSResource{
+				NS: dnsmessage.MustNewName("17.84.com"),
+			},
+		},
+		{
+			q: &question{q: dnsmessage.Question{
+				Type: dnsmessage.TypeNS,
+			}},
+			b: []byte("Quare fremuerunt gentes, et populi " +
+				"meditati sunt inania? Astiterunt reges " +
+				"terrae, et principes convenerunt in unum " +
+				"adversus Dominum et adversus christum"),
+			want: &dnsmessage.NSResource{
+				NS: dnsmessage.MustNewName("17.A5QM2SJ541J74" +
+					"PBDELIN4TBEEGG6EPBEEHIN6B10CLQ20S3F" +
+					"E1QMOQ90DLIM8QB.KC5Q6I83JELN78839DP" +
+					"GMSQB17SG42SRKD5Q6ASJLDPQ20SJ5CTIN6" +
+					"83KCLP74O.B55GG6AT10E1P6IRJ3D5O6ASP" +
+					"0CDNMSTJ5DPIN4TBEEGG6IRH0ELN7AR90C5" +
+					"I7C.PBIEDQN6824DTMMIRJLDKG6AT10C5I7" +
+					"CPBIEDQN6833D1P6ISRKELMG.com"),
+			},
+		},
+	} {
+		tc.q.PutBytes(tc.b, true)
+		if !reflect.DeepEqual(tc.q.ans.Body, tc.want) {
+			t.Errorf(
+				"Have: %v/%#02x Got: %#v Want: %#v",
+				tc.q.q.Type, tc.b,
 				tc.q.ans.Body,
 				tc.want,
 			)
