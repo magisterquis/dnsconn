@@ -5,7 +5,7 @@ package dnsconnserver
  * Parse messages, server-side
  * By J. Stuart McMurray
  * Created 20180823
- * Last Modified 20180830
+ * Last Modified 20180909
  */
 
 import (
@@ -22,19 +22,24 @@ var ErrUnknownMessageType = errors.New("unknown message type")
 // MessageType is the type of message sent from the client.
 type MessageType uint16
 
+// The following can be set in Message.Type:
 const (
-	// Message.Type
-
 	// MTNew indicates a request for a new connection
 	MTNew MessageType = 1
 	// MTData indicates a message with Conn data
 	MTData MessageType = 2
 	// MTDReq indicates a request for Conn data
 	MTDReq MessageType = 3
+	// MTGIndex gets the index of the next byte to be sent or the next byte
+	// expected to be received.  The sent payload's last bit determines
+	// whether or not the value returned is the index of the next byte to
+	// be sent (0) or the index of the next byte expected to be received
+	// (1).  A 0-byte payload is treated as a payload ending in a 0 bit.
+	MTGIndex MessageType = 4
 	// MTRIndex indicates that the next index should be 0
-	MTRIndex MessageType = 4
+	MTRIndex MessageType = 5
 	// MTEnd indicates the last message in a Conn
-	MTEnd MessageType = 5
+	MTEnd MessageType = 6
 	// MTUnknown represents an unknown message type.  This can be used in
 	// a message returned by a MessageParser which will have the same
 	// effect as the MessageParser returning ErrUnknownMessageType.
@@ -46,6 +51,7 @@ var messageTypeNames = map[MessageType]string{
 	MTNew:     "MTNnew",
 	MTData:    "MTData",
 	MTDReq:    "MTDReq",
+	MTGIndex:  "MTGIndex",
 	MTRIndex:  "MTRIndex",
 	MTEnd:     "MTEnd",
 	MTUnknown: "unknown", /* Unknown message type */

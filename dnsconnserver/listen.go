@@ -497,6 +497,8 @@ func (l *Listener) handleQuery(
 			err = c.psh(qn)
 		case MTDReq:
 			err = c.req(qn)
+		case MTGIndex:
+			c.gindex(qn)
 		case MTRIndex:
 			c.rindex(qn)
 		case MTEnd:

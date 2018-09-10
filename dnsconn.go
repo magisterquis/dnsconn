@@ -1,13 +1,13 @@
 // Package dnsconn-server implements the server side of a stream connection
 // using DNS as the underlying transport.
-package dnsconn-server
+package dnsconn
 
 /*
  * dnsconn.go
  * Stream over DNS
  * By J. Stuart McMurray
  * Created 20180822
- * Last Modified 20180825
+ * Last Modified 20180909
  */
 
 // NetworkName is the name returned by Addr's String method.

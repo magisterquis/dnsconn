@@ -5,7 +5,7 @@ package dnsconnserver
  * Represents a received query
  * By J. Stuart McMurray
  * Created 20180826
- * Last Modified 20180902
+ * Last Modified 20180909
  */
 
 import (
@@ -276,12 +276,6 @@ type query struct {
 	qs  []*question       /* Decoded questions */
 }
 
-// Reply returns a reply for q ready to be sent on the wire.
-func (q query) Reply() ([]byte, error) {
-	/* TODO: Finish this */
-	return nil, nil
-}
-
 // SortQuestions sorts the questions (really, the ClientMessages) in q first by
 // ID and then by Index.  The idea here is to prevent a situation in which
 // multiple qnames come in one query, we get a later message first, and have to
@@ -330,23 +324,6 @@ func handledType(t dnsmessage.Type) bool {
 		return false
 	}
 }
-
-/*
-switch q.q.Type {
-case
-	dnsmessage.TypeA,
-	dnsmessage.TypeNS,
-	dnsmessage.TypeCNAME,
-	dnsmessage.TypeSOA,
-	dnsmessage.TypePTR,
-	dnsmessage.TypeMX,
-	dnsmessage.TypeTXT,
-	dnsmessage.TypeAAAA,
-	dnsmessage.TypeSRV:
-default:
-	panic("unknown type " + q.q.Type.String())
-}
-*/
 
 /* makeAAAA turns a, which should be half of an IPv6 address, into a []byte.
 it panics on error. */

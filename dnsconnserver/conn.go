@@ -5,7 +5,7 @@ package dnsconnserver
  * Serverside connections
  * By J. Stuart McMurray
  * Created 20180823
- * Last Modified 20180901
+ * Last Modified 20180909
  */
 
 import (
@@ -380,4 +380,32 @@ func (c *Conn) resetIndex() {
 	c.n2cLock.Lock()
 	defer c.n2cLock.Unlock()
 	c.n2cNextIndex = 0
+	/* TODO: Should this reset both? */
 }
+
+/* getIndex gets the expected index of the next byte to be received or sent. */
+func (c *Conn) getIndex(qn *question) {
+	var index uint
+	/* Work out which index to return */
+	if 0 == len(qn.msg.Payload) ||
+		0 == qn.msg.Payload[len(qn.msg.Payload)-1] {
+		/* Next byte to send */
+		c.c2nLock.Lock()
+		defer c.c2nLock.Unlock()
+		index = c.c2nIndex
+	} else {
+		/* Next byte expected */
+		c.n2cLock.Lock()
+		defer c.n2cLock.Unlock()
+		index = c.n2cIndex
+	}
+	/* Set answer */
+	qn.PutUint(index, true)
+}
+
+/* TODO: Four different A record first bytes, to indicate whether the A record
+has 0, 1, 2, or 3 bytes of data.
+A way to set the IPv6 prefix.  The first byte after the prefix holds the number
+of bytes of payload data (right bits), as well as a good/bad flag (leftmost
+bit)
+For A records, */
