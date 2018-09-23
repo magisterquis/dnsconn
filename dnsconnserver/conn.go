@@ -320,8 +320,6 @@ func (c *Conn) rindex(qn *question) {
 	defer c.n2cLock.Unlock()
 	c.c2nLock.Lock()
 	defer c.c2nLock.Unlock()
-	c.n2cNextIndex = 0
-	c.c2nIndex = 0
 }
 
 /* fin handles a request to end the Conn */

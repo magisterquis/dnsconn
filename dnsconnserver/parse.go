@@ -36,7 +36,8 @@ const (
 	// be sent (0) or the index of the next byte expected to be received
 	// (1).  A 0-byte payload is treated as a payload ending in a 0 bit.
 	MTGIndex MessageType = 4
-	// MTRIndex indicates that the next index should be 0
+	// MTRIndex indicates that the index should be reset to 0.  Which index
+	// to reset is determined in the same way as for MTGIndex.
 	MTRIndex MessageType = 5
 	// MTEnd indicates the last message in a Conn
 	MTEnd MessageType = 6
