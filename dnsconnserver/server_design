@@ -1,0 +1,32 @@
+1. Query comes in
+2. In cache?
+3. Is a domain we serve?
+4. Parse the message.
+4. Has a known connection id?
+5. Request for a new conn?
+
+Parsed query contains:
+1. Conn id
+2. Message counter
+3. Payload
+
+A Responses:
+1. First byte signifies number of payload bytes
+2. Payload contains a code if first byte signifies 0 byte payload
+
+New conn request:
+1. Implant ID: n00
+2. Counter: The first counter number to use
+3. Payload: The number of counter numbers (i.e. modulus)
+
+New conn response:
+1. 3-byte payload
+2. Payload is conn ID
+
+Query with a known connID
+1. Hand to conn struct
+2. Discard if not right number, reply with non-NOERROR code
+3. Send payload to conn user
+4. Try to read for a short time
+5. Send back the data
+
