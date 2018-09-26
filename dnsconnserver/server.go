@@ -1,4 +1,4 @@
-// dnsconnserver is the server side of dnsconn.
+// dnsconnserver is the server side of DNSConn.
 package dnsconnserver
 
 /*
@@ -44,7 +44,7 @@ var DefaultConfig = Config{
 	Parse:   DefaultParser,
 }
 
-// Server represents the server side of dnsconn.  It's responsible for reading
+// Server represents the server side of DNSConn.  It's responsible for reading
 // DNS queries and sending replies via its underlying transport.  Server
 // implements net.Listener.
 type Server struct {
