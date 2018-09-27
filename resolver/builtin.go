@@ -14,7 +14,7 @@ import (
 )
 
 // ErrNotImplemented is returned by StdlibResolver's LookupAC and LookupAAAAAC
-// methods.
+// methods.  This should not be confused with ErrRCNotImp.
 var ErrNotImplemented = errors.New("not implemented")
 
 /* stdlib exists only to define methods on */

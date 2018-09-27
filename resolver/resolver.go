@@ -1,4 +1,4 @@
-// resolver implements a lightweight DNS resolver
+// Package resolver implements a lightweight DNS resolver
 package resolver
 
 /*
@@ -10,8 +10,11 @@ package resolver
  */
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"net"
+	"sync"
 )
 
 // QueryMethod is used to configure which server(s) are queried by resolver
@@ -19,15 +22,14 @@ import (
 type QueryMethod int
 
 const (
-	/* Query a different server every query */
+	// RoundRobin causes a different server to be used for every query.
 	RoundRobin QueryMethod = iota
 
-	/* Always start with the first server, and try each subsequent
-	server only if the previous server does not return any answers. */
+	// NextOnFail causes the servers to be tried in order until one
+	// returns an answer or the list of servers is exhausted.
 	NextOnFail
 
-	/* Use every server for every query and combine (and deduplicate)
-	answers. */
+	// QueryAll causes all servers to be tried for every query.
 	QueryAll
 )
 
@@ -89,16 +91,20 @@ type Resolver interface {
 	//LookupSRV(name string) ([]SRV, error)
 }
 
+/* buflen is the size of the buffers kept in the resolver's pool */
+const buflen = 10240
+
 /* resolver is the built-in implementation of Resolver */
 type resolver struct {
-	/* TODO: Finish this */
 	packetConn  net.PacketConn
 	servers     []net.IP
 	queryMethod QueryMethod
+	bufpool     *sync.Pool
+	upool       *sync.Pool
 }
 
-// NewRoundRobinResolver returns a resolver which makes queries to the given
-// servers.  How the servers are queried is determined by method.
+// NewResolver returns a resolver which makes queries to the given servers.
+// How the servers are queried is determined by method.
 func NewResolver(servers []net.IP, method QueryMethod) (Resolver, error) {
 	/* Make sure we actually have servers */
 	if 0 == len(servers) {
@@ -108,6 +114,8 @@ func NewResolver(servers []net.IP, method QueryMethod) (Resolver, error) {
 	return &resolver{
 		servers:     servers,
 		queryMethod: method,
+		bufpool:     newBufPool(buflen),
+		upool:       newBufPool(2),
 	}, nil
 
 }
@@ -117,5 +125,26 @@ func NewResolver(servers []net.IP, method QueryMethod) (Resolver, error) {
 // peer, such as with net.DialUDP or net.DialUnix with "unixpacket" as the
 // network.
 func NewResolverFromPacketConn(pc net.PacketConn) Resolver {
-	return &resolver{packetConn: pc}
+	return &resolver{
+		packetConn: pc,
+		bufpool:    newBufPool(buflen),
+		upool:      newBufPool(2),
+	}
+}
+
+/* newBufPool returns a new sync.Pool which holds buffers of the given size. */
+func newBufPool(size uint) *sync.Pool {
+	return &sync.Pool{New: func() interface{} {
+		return make([]byte, int(size))
+	}}
+}
+
+/* randUint16 returns a random uint16 */
+func (r *resolver) randUint16() (uint16, error) {
+	b := r.upool.Get().([]byte)
+	defer r.upool.Put(b)
+	if _, err := rand.Read(b); nil != err {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint16(b), nil
 }
