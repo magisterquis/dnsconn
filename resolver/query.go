@@ -10,6 +10,7 @@ package resolver
 
 import (
 	"errors"
+	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -35,37 +36,44 @@ func (r *resolver) query(
 	var err error
 
 	/* Roll query */
-	buf := r.bufpool.Get().([]byte)
-	defer r.bufpool.Put(buf)
-	qm := dnsmessage.Message{
+	qm := &dnsmessage.Message{
 		Header: dnsmessage.Header{RecursionDesired: true},
 		Questions: []dnsmessage.Question{{
 			Type:  qtype,
 			Class: dnsmessage.ClassINET,
 		}},
 	}
-	qm.Header.ID, err = r.randUint16()
-	if nil != err {
-		return nil, err
-	}
 	qm.Questions[0].Name, err = dnsmessage.NewName(name)
-	if nil != err {
-		return nil, err
-	}
-	qb, err := qm.AppendPack(buf[0:])
 	if nil != err {
 		return nil, err
 	}
 
 	/* Query either via the packetconn or server(s) */
-	var anss []dnsmessage.Resource
+	var (
+		anss  []dnsmessage.Resource
+		rcode dnsmessage.RCode
+	)
 	if nil != r.packetConn {
-		anss, err = r.queryPC(qb)
+		anss, rcode, err = r.queryPC(qm)
 	} else {
-		anss, err = r.queryServers(qb)
+		anss, rcode, err = r.queryServers(qm)
 	}
 	if nil != err {
 		return nil, err
+	}
+
+	/* If we got a non-success rcode, return that */
+	switch rcode {
+	case dnsmessage.RCodeFormatError:
+		return nil, ErrRCFormErr
+	case dnsmessage.RCodeServerFailure:
+		return nil, ErrRCServFail
+	case dnsmessage.RCodeNameError:
+		return nil, ErrRCNXDomain
+	case dnsmessage.RCodeNotImplemented:
+		return nil, ErrRCNotImp
+	case dnsmessage.RCodeRefused:
+		return nil, ErrRCRefused
 	}
 
 	/* Filter output by ans.Header.Type */
@@ -83,28 +91,36 @@ func (r *resolver) query(
 				continue
 			}
 		case *dnsmessage.NSResource:
-			if atype == dnsmessage.TypeNS {
+			if atype != dnsmessage.TypeNS {
+				continue
 			}
 		case *dnsmessage.CNAMEResource:
-			if atype == dnsmessage.TypeCNAME {
+			if atype != dnsmessage.TypeCNAME {
+				continue
 			}
 		case *dnsmessage.SOAResource:
-			if atype == dnsmessage.TypeSOA {
+			if atype != dnsmessage.TypeSOA {
+				continue
 			}
 		case *dnsmessage.PTRResource:
-			if atype == dnsmessage.TypePTR {
+			if atype != dnsmessage.TypePTR {
+				continue
 			}
 		case *dnsmessage.MXResource:
-			if atype == dnsmessage.TypeMX {
+			if atype != dnsmessage.TypeMX {
+				continue
 			}
 		case *dnsmessage.TXTResource:
-			if atype == dnsmessage.TypeTXT {
+			if atype != dnsmessage.TypeTXT {
+				continue
 			}
 		case *dnsmessage.AAAAResource:
-			if atype == dnsmessage.TypeAAAA {
+			if atype != dnsmessage.TypeAAAA {
+				continue
 			}
 		case *dnsmessage.SRVResource:
-			if atype == dnsmessage.TypeSRV {
+			if atype != dnsmessage.TypeSRV {
+				continue
 			}
 		default:
 			continue
@@ -118,20 +134,67 @@ func (r *resolver) query(
 }
 
 /* queryPC makes a query via the "connected" packetconn */
-func (r *resolver) queryPC(m []byte) (
+func (r *resolver) queryPC(qm *dnsmessage.Message) (
 	[]dnsmessage.Resource,
 	dnsmessage.Rcode,
 	error,
 ) {
-	buf := r.bufpool.Get().([]byte)
+	/* Find a unique ID and register an answer channel */
+	/* TODO: Put in own function */
+	var (
+		qid   uint16
+		inUse = true
+		ach   = make(chan []byte)
+	)
+	r.ansChL.Lock()
+	for inUse {
+		qid, err = randUint16()
+		if nil != err {
+			r.ansChL.Unock()
+			return nil, 0, err
+		}
+		_, inUse = r.ansCh[qid]
+	}
+	/* Register for a response */
+	r.ansCh[qid] = ach
+	/* Work out how long to sleep */
+	var to time.Duration
+	r.qtoL.RLock()
+	to = r.qto
+	r.qtoL.RUnlock()
+	/* Close the channel after the timeout, if it's still there */
+	r.ansChL.Unock()
+
+	/* Add the ID and roll the message */
+	qm.Header.ID = qid
+	qbuf := r.bufpool.Get().([]byte)
 	defer r.bufpool.Put(buf)
-	/* TODO: Finish this */
+	m, err := qm.AppendPack(buf[:0])
+	if nil != err {
+		return nil, 0, err
+	}
+
+	/* Close the channel if the message takes too long to come back */
+	go func() {
+		time.Sleep(to)
+		r.ansChL.Lock()
+		if ch, ok := r.ansCh[qid]; ch == ach {
+			close(ach)
+		}
+		r.ansChL.Unock()
+	}()
+	if n,err:=r.pc.Write
+	/* TODO: Send the message */
+
+	/* TODO: Wait for the reply */
+
+	/* TODO: Unmarshal and return rcode and answers */
 
 	return nil, nil /* DEBUG */
 }
 
 /* queryServers makes a query via the configured server(s) */
-func (r *resolver) queryServers(m []byte) (
+func (r *resolver) queryServers(qm *dnsmessage.Message) (
 	[]dnsmessage.Resource,
 	dnsmessage.Rcode,
 	error,

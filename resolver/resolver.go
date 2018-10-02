@@ -15,6 +15,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"time"
 )
 
 // QueryMethod is used to configure which server(s) are queried by resolver
@@ -89,6 +90,10 @@ type Resolver interface {
 
 	//// LookupSRV looks up the SRV records for the given name.
 	//LookupSRV(name string) ([]SRV, error)
+
+	// QueryTimeout sets the timeout for receiving responses to queries.
+	QueryTimeout(to time.Duration)
+	/* TODO: Not that the builting resolver wrapper ignores this */
 }
 
 /* buflen is the size of the buffers kept in the resolver's pool */
@@ -96,11 +101,18 @@ const buflen = 10240
 
 /* resolver is the built-in implementation of Resolver */
 type resolver struct {
-	packetConn  net.PacketConn
+	conn        net.Conn
+	connL       sync.Mutex
 	servers     []net.IP
 	queryMethod QueryMethod
 	bufpool     *sync.Pool
 	upool       *sync.Pool
+
+	ansCh  map[uint16]chan<- []byte /* Answers may be sent here */
+	ansChL *sync.Mutex
+
+	qto  time.Duration /* Query timeout */
+	qtoL *sync.RWMutex
 }
 
 // NewResolver returns a resolver which makes queries to the given servers.
@@ -116,20 +128,31 @@ func NewResolver(servers []net.IP, method QueryMethod) (Resolver, error) {
 		queryMethod: method,
 		bufpool:     newBufPool(buflen),
 		upool:       newBufPool(2),
+		ansCh:       make(map[uint16]chan<- []byte),
 	}, nil
 
 }
 
-// NewResolverFromPacketConn returns a Resolver which sends its queries on the
-// provided net.PacketConn.  The net.PacketConn should be associated with a
-// peer, such as with net.DialUDP or net.DialUnix with "unixpacket" as the
-// network.
-func NewResolverFromPacketConn(pc net.PacketConn) Resolver {
+// NewResolverFromConn returns a Resolver which sends its queries on the
+// provided net.Conn.  If the net.Conn implements the net.PacketConn interface,
+// it will be treated as a UDPish connection (though it need not be), otherwise
+// it will be treated as TCPish.
+func NewResolverFromConn(c net.PacketConn) Resolver {
 	return &resolver{
-		packetConn: pc,
-		bufpool:    newBufPool(buflen),
-		upool:      newBufPool(2),
+		conn:    c,
+		bufpool: newBufPool(buflen),
+		upool:   newBufPool(2),
+		ansCh:   make(map[uint16]chan<- []byte),
 	}
+	/* TODO: Listen on conn.  If an answer comes back for a DNS ID in
+	ansCh, send it back and close the channel. */
+}
+
+// QueryTimeout sets the timeout for responses to queries.
+func (r *Resolver) QueryTimeout(to time.Duration) {
+	r.qtoL.Lock()
+	defer r.qtoL.Unlock()
+	r.qto = to
 }
 
 /* newBufPool returns a new sync.Pool which holds buffers of the given size. */
