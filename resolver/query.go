@@ -12,7 +12,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"strings"
-	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -165,15 +164,12 @@ func (r *resolver) queryPC(qm *dnsmessage.Message) (
 	dnsmessage.RCode,
 	error,
 ) {
-	/* Find a unique ID and register an answer channel */
-	var (
-		qid   uint16
-		inUse = true
-		ach   = make(chan *dnsmessage.Message)
-	)
+
+	/* Get the query ID as well as the channel from which to read it */
+	id, ch, err := r.newAnsChannel()
 
 	/* Add the ID and roll the message */
-	qm.Header.ID = qid
+	qm.Header.ID = id
 	qbuf := r.bufpool.Get().([]byte)
 	defer r.bufpool.Put(qbuf)
 	m, err := qm.AppendPack(qbuf[:0])
@@ -193,49 +189,12 @@ func (r *resolver) queryPC(qm *dnsmessage.Message) (
 		m = sm
 	}
 
-	r.ansChL.Lock()
 	for inUse {
-		qid, err = r.randUint16()
 		if nil != err {
 			r.ansChL.Unlock()
 			return nil, 0, err
 		}
-		_, inUse = r.ansCh[qid]
 	}
-	/* Register for a response */
-	r.ansChL.Lock()
-	r.ansCh[qid] = ach
-	r.ansChL.Lock()
-	/* Work out how long to sleep */
-	var to time.Duration
-	r.qtoL.RLock()
-	to = r.qto
-	r.qtoL.RUnlock()
-	/* Close the channel after the timeout, if it's still there */
-	r.ansChL.Unlock()
-
-	/* Close the channel if the message takes too long to come back */
-	go func() {
-		/* Wait until the timeout */
-		time.Sleep(to)
-		/* Grab hold of the channel if we have one */
-		r.ansChL.Lock()
-		ch, ok := r.ansCh[qid]
-		r.ansChL.Unlock()
-		if !ok {
-			return
-		}
-
-		/* Close and drain the channel */
-		close(ch)
-		/* Drain the channel after we closed it to avoid
-		channel leakage.  There's a small race condition here
-		where the answer could come in right before the close
-		and the drain loop gets it before the real reader. */
-		for _ = range ach {
-			/* Drain */
-		}
-	}()
 
 	/* Send the message */
 	r.connL.Lock()
@@ -246,7 +205,7 @@ func (r *resolver) queryPC(qm *dnsmessage.Message) (
 	}
 
 	/* Wait for the reply */
-	ans, ok := <-ach
+	ans, ok := <-ch
 	if !ok {
 		/* Answer didn't arrive in time */
 		return nil, 0xFFFF, ErrAnswerTimeout

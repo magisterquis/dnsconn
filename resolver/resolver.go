@@ -49,6 +49,10 @@ const QUERYTIMEOUT = 10 * time.Second
 // net.Lookup* timeouts are used instead.
 var StdlibResolver Resolver = stdlibResolver()
 
+// ErrTooManyQueries is returned when there are too many outstanding queries.
+// Approximate 65k queries can be in flight at once.
+var ErrTooManyQueries = errors.New("too many outstanding queries")
+
 // MX represents an MX record.
 type MX struct {
 	Preference uint16
@@ -269,6 +273,70 @@ func (r *resolver) sendErr(err error, close bool) {
 	r.cech = nil
 }
 
-/* TODO: Two functions to safely add and remove answer channels */
-/* TODO: addAnsCh */
-/* TODO: delAnsCh */
+/* newAnsChannel registers a channel in r on which will be sent a reply to a
+query with the returned ID.  The channel will be closed after the timeout. */
+func (r *resolver) newAnsChannel() (
+	id uint16,
+	ch <-chan *dnsmessage.Message,
+	err error,
+) {
+	r.ansChL.Lock()
+	r.ansChL.Unlock()
+
+	/* If there's already uint16Max outstanding queries, give up */
+	if 0xFFFF <= len(r.ansCh) {
+		return ErrTooManyQueries
+	}
+
+	/* Find a unique ID */
+	id, err = r.randUint16()
+	if nil != err {
+		return 0, nil, err
+	}
+	for {
+		if _, inUse := r.ansCh[id]; !inUse {
+			break
+		}
+		id++
+	}
+
+	/* Register the channel */
+	ch = make(chan *dnsmessage.Message)
+	r.ansCh[id] = ch
+
+	/* Close the channel if the message takes too long to come back */
+	go func() {
+		/* Work out how long to sleep before killing the channel */
+		r.qtoL.RLock()
+		to := r.qto
+		r.qtoL.RUnlock()
+		/* Wait until the timeout */
+		time.Sleep(to)
+		/* Grab hold of the channel if we have one */
+		r.ansChL.Lock()
+		defer r.ansChL.Unlock()
+		ach, ok := r.ansCh[id]
+		/* If we don't actually have a channel or if this isn't the
+		right channel for this ID (because of ID reuse), we're done */
+		if !ok || ach != ch {
+			return
+		}
+		/* Close the channel and remove it from the map */
+		delete(r.ansCh, id)
+		close(ch)
+		/* Drain the channel after we closed it to avoid
+		channel leakage.  There's a small race here where the answer
+		could come in right before the close and the drain loop gets it
+		before the real reader which is more or less equivalent to the
+		answer coming past the timeout. */
+		for _ = range ach {
+			/* Drain */
+		}
+	}()
+}
+
+/* sendAnsChannel sends a to the appropriate answer channel (if it exists),
+closes it and removes the channel from r. */
+func (r *resolver) sendAnsChannel(a *dnsmessage.Message) {
+	/* TODO: Finish this */
+}
