@@ -6,16 +6,19 @@ package resolver
  * Lightweight DNS resolver
  * By J. Stuart McMurray
  * Created 20180925
- * Last Modified 20180925
+ * Last Modified 20181003
  */
 
 import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"sync"
 	"time"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 // QueryMethod is used to configure which server(s) are queried by resolver
@@ -34,10 +37,14 @@ const (
 	QueryAll
 )
 
+// QUERYTIMEOUT is the default query timeout
+const QUERYTIMEOUT = 10 * time.Second
+
 // StdlibResolver is a Resolver which wraps the net.Lookup* functions.  The
 // Resolver's LookupAC and LookupAAAAC methods will always return errors and
 // its LookupA and LookupAAAA methods will both make queries for both A and
-// AAAA records.
+// AAAA records.  StblibResolver.QueryTimeout is a no-op.  The default
+// net.Lookup* timeouts are used instead.
 var StdlibResolver Resolver = stdlibResolver()
 
 // MX represents an MX record.
@@ -93,26 +100,28 @@ type Resolver interface {
 
 	// QueryTimeout sets the timeout for receiving responses to queries.
 	QueryTimeout(to time.Duration)
-	/* TODO: Not that the builting resolver wrapper ignores this */
 }
 
 /* buflen is the size of the buffers kept in the resolver's pool */
-const buflen = 10240
+const buflen = 65536
 
 /* resolver is the built-in implementation of Resolver */
 type resolver struct {
 	conn        net.Conn
+	isPC        bool /* Is conn a net.PacketConn? */
+	cech        chan error
 	connL       sync.Mutex
 	servers     []net.IP
 	queryMethod QueryMethod
 	bufpool     *sync.Pool
 	upool       *sync.Pool
 
-	ansCh  map[uint16]chan<- []byte /* Answers may be sent here */
-	ansChL *sync.Mutex
+	/* Answers to queries are sent here */
+	ansCh  map[uint16]chan<- *dnsmessage.Message
+	ansChL sync.Mutex
 
 	qto  time.Duration /* Query timeout */
-	qtoL *sync.RWMutex
+	qtoL sync.RWMutex
 }
 
 // NewResolver returns a resolver which makes queries to the given servers.
@@ -123,33 +132,50 @@ func NewResolver(servers []net.IP, method QueryMethod) (Resolver, error) {
 		return nil, errors.New("no servers specified")
 	}
 
-	return &resolver{
-		servers:     servers,
-		queryMethod: method,
-		bufpool:     newBufPool(buflen),
-		upool:       newBufPool(2),
-		ansCh:       make(map[uint16]chan<- []byte),
-	}, nil
-
+	/* Return an initialized resolver */
+	res := newResolver()
+	res.servers = servers
+	res.queryMethod = method
+	return res, nil
 }
 
 // NewResolverFromConn returns a Resolver which sends its queries on the
 // provided net.Conn.  If the net.Conn implements the net.PacketConn interface,
 // it will be treated as a UDPish connection (though it need not be), otherwise
-// it will be treated as TCPish.
-func NewResolverFromConn(c net.PacketConn) Resolver {
+// it will be treated as TCPish.  Errors encountered during reading and parsing
+// responses will be sent to the returned channel which will be closed when
+// no more responses are able to be read (usually due to c being closed).  The
+// channel must be serviced or resolution will hang.
+func NewResolverFromConn(c net.Conn) (Resolver, <-chan error) {
+	res := newResolver()
+	res.conn = c
+	res.ech = make(chan error)
+	if _, ok := c.(net.PacketConn); ok {
+		res.isPC = true
+	}
+
+	/* Listen on Conn for answers */
+	go res.listenforanswers()
+
+	return res, res.ech
+
+	/* TODO: Listen on conn for answers.  If an answer comes back for a DNS
+	ID in ansCh, send it back and close the channel. */
+}
+
+/* newResolver makes and initializes as much of a resolver as can be
+initialized without a conn or query method */
+func newResolver() *resolver {
 	return &resolver{
-		conn:    c,
 		bufpool: newBufPool(buflen),
 		upool:   newBufPool(2),
-		ansCh:   make(map[uint16]chan<- []byte),
+		ansCh:   make(map[uint16]chan<- *dnsmessage.Message),
+		qto:     QUERYTIMEOUT,
 	}
-	/* TODO: Listen on conn.  If an answer comes back for a DNS ID in
-	ansCh, send it back and close the channel. */
 }
 
 // QueryTimeout sets the timeout for responses to queries.
-func (r *Resolver) QueryTimeout(to time.Duration) {
+func (r *resolver) QueryTimeout(to time.Duration) {
 	r.qtoL.Lock()
 	defer r.qtoL.Unlock()
 	r.qto = to
@@ -171,3 +197,76 @@ func (r *resolver) randUint16() (uint16, error) {
 	}
 	return binary.LittleEndian.Uint16(b), nil
 }
+
+/* listenForAnswers listens on r.conn for DNS answers and sends them to the
+appropriate channel in r.ansCh. */
+func (r *resolver) listenForAnswers() {
+	var (
+		/* Read buffers */
+		sbuf = r.upool.Get().([]byte)
+		pbuf = r.bufpool.Get().([]byte)
+		n    int
+		size uint16
+		err  error
+	)
+
+	for {
+		/* Reset the size */
+		size = uint16(len(pbuf))
+
+		/* Grab a query */
+		if !r.isPC {
+			/* Grab the size */
+			_, err = io.ReadFull(r.conn, sbuf)
+			if nil != err {
+				go r.sendErr(err, true)
+				return
+			}
+			size = binary.Uint16(sbuf)
+			/* Grab the query */
+			_, err = io.ReadFull(r.conn, pbuf[:size])
+			if nil != err {
+				go r.sendErr(err, true)
+				return
+			}
+		} else {
+			n, err = r.conn.Read(pbuf)
+			if nil != err {
+				go r.sendErr(err, true)
+				return
+			}
+			size = uint16(n)
+		}
+
+		/* Unmarshal it */
+		msg := new(dnsmessage.Message)
+		if err := msg.Unpack(pbuf[:size]); nil != err {
+			go r.sendErr(err, false)
+			continue
+		}
+
+		/* Work out where to send it */
+		ch, ok := msg.Header.ID
+	}
+}
+
+/* sendErr sends an error to r.cech if it is not already closed.  If close is
+true, the channel will be closed.  sendErr should probably always be called
+in a goroutine. */
+func (r *resolver) sendErr(err error, close bool) {
+	r.connL.Lock()
+	defer r.connL.Unlock()
+	/* If the channel has been closed, don't bother */
+	if nil == r.cech {
+		return
+	}
+	/* Send the error on the channel */
+	r.cech <- err
+	/* Close the channel if we're meant to */
+	close(r.cech)
+	r.cech = nil
+}
+
+/* TODO: Two functions to safely add and remove answer channels */
+/* TODO: addAnsCh */
+/* TODO: delAnsCh */

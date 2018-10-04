@@ -5,15 +5,21 @@ package resolver
  * perform a query
  * By J. Stuart McMurray
  * Created 20180926
- * Last Modified 20180926
+ * Last Modified 20181003
  */
 
 import (
+	"encoding/binary"
 	"errors"
+	"strings"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
+
+// MAXCNAMEDEPTH is the maximum depth of CNAME recursion which will be
+// performed.
+const MAXCNAMEDEPTH = 10
 
 // The following errors correspond to non-success (i.e. not NOERROR) Response
 // Codes returned from DNS servers.
@@ -25,9 +31,24 @@ var (
 	ErrRCRefused  = errors.New("refused")  /* Query refused */
 )
 
+// ErrAnswerTimeout is returned if the answer did not return before the timeout
+// elapsed.
+var ErrAnswerTimeout = errors.New("timeout waiting for answer")
+
 /* query makes a query for the name and given type and returns all of the
-answers of type atype it gets. */
+answers of type atype it gets.  query is equivalent to queryRecurse with a
+depth of MAXCNAMEDEPTH. */
 func (r *resolver) query(
+	name string,
+	qtype dnsmessage.Type,
+	atype dnsmessage.Type,
+) ([]dnsmessage.Resource, error) {
+	return r.queryRecurse(name, qtype, atype, MAXCNAMEDEPTH)
+}
+
+/* queryRecurse is like Query, but only recurses so many times.  It is used for
+following the trail of CNAMEs. */
+func (r *resolver) queryRecurse(
 	name string,
 	qtype dnsmessage.Type,
 	atype dnsmessage.Type,
@@ -36,6 +57,9 @@ func (r *resolver) query(
 	var err error
 
 	/* Roll query */
+	if !strings.HasSuffix(name, ".") {
+		name += "."
+	}
 	qm := &dnsmessage.Message{
 		Header: dnsmessage.Header{RecursionDesired: true},
 		Questions: []dnsmessage.Question{{
@@ -53,7 +77,7 @@ func (r *resolver) query(
 		anss  []dnsmessage.Resource
 		rcode dnsmessage.RCode
 	)
-	if nil != r.packetConn {
+	if nil != r.conn {
 		anss, rcode, err = r.queryPC(qm)
 	} else {
 		anss, rcode, err = r.queryServers(qm)
@@ -79,12 +103,14 @@ func (r *resolver) query(
 	/* Filter output by ans.Header.Type */
 	last := 0
 	for _, ans := range anss {
+		/* TODO: Handle CNAMEs */
+
 		/* Make sure answer comes back for the right name */
 		if ans.Header.Name.String() != name {
 			continue
 		}
 
-		/* Skip if the answer type and qtype don't match */
+		/* Skip if the answer type and atype don't match */
 		switch ans.Body.(type) {
 		case *dnsmessage.AResource:
 			if atype != dnsmessage.TypeA {
@@ -136,67 +162,103 @@ func (r *resolver) query(
 /* queryPC makes a query via the "connected" packetconn */
 func (r *resolver) queryPC(qm *dnsmessage.Message) (
 	[]dnsmessage.Resource,
-	dnsmessage.Rcode,
+	dnsmessage.RCode,
 	error,
 ) {
 	/* Find a unique ID and register an answer channel */
-	/* TODO: Put in own function */
 	var (
 		qid   uint16
 		inUse = true
-		ach   = make(chan []byte)
+		ach   = make(chan *dnsmessage.Message)
 	)
+
+	/* Add the ID and roll the message */
+	qm.Header.ID = qid
+	qbuf := r.bufpool.Get().([]byte)
+	defer r.bufpool.Put(qbuf)
+	m, err := qm.AppendPack(qbuf[:0])
+	if nil != err {
+		return nil, 0, err
+	}
+
+	/* If we're not sending on a packetconn, add the size */
+	if !r.isPC {
+		sm := r.bufpool.Get().([]byte)
+		defer r.bufpool.Put(sm)
+		if len(sm)-2 < len(m) {
+			return nil, 0, errors.New("message too large")
+		}
+		binary.BigEndian.PutUint16(sm, uint16(len(m)))
+		copy(sm[2:], m)
+		m = sm
+	}
+
 	r.ansChL.Lock()
 	for inUse {
-		qid, err = randUint16()
+		qid, err = r.randUint16()
 		if nil != err {
-			r.ansChL.Unock()
+			r.ansChL.Unlock()
 			return nil, 0, err
 		}
 		_, inUse = r.ansCh[qid]
 	}
 	/* Register for a response */
+	r.ansChL.Lock()
 	r.ansCh[qid] = ach
+	r.ansChL.Lock()
 	/* Work out how long to sleep */
 	var to time.Duration
 	r.qtoL.RLock()
 	to = r.qto
 	r.qtoL.RUnlock()
 	/* Close the channel after the timeout, if it's still there */
-	r.ansChL.Unock()
-
-	/* Add the ID and roll the message */
-	qm.Header.ID = qid
-	qbuf := r.bufpool.Get().([]byte)
-	defer r.bufpool.Put(buf)
-	m, err := qm.AppendPack(buf[:0])
-	if nil != err {
-		return nil, 0, err
-	}
+	r.ansChL.Unlock()
 
 	/* Close the channel if the message takes too long to come back */
 	go func() {
+		/* Wait until the timeout */
 		time.Sleep(to)
+		/* Grab hold of the channel if we have one */
 		r.ansChL.Lock()
-		if ch, ok := r.ansCh[qid]; ch == ach {
-			close(ach)
+		ch, ok := r.ansCh[qid]
+		r.ansChL.Unlock()
+		if !ok {
+			return
 		}
-		r.ansChL.Unock()
+
+		/* Close and drain the channel */
+		close(ch)
+		/* Drain the channel after we closed it to avoid
+		channel leakage.  There's a small race condition here
+		where the answer could come in right before the close
+		and the drain loop gets it before the real reader. */
+		for _ = range ach {
+			/* Drain */
+		}
 	}()
-	if n,err:=r.pc.Write
-	/* TODO: Send the message */
 
-	/* TODO: Wait for the reply */
+	/* Send the message */
+	r.connL.Lock()
+	_, err = r.conn.Write(m)
+	r.connL.Unlock()
+	if nil != err {
+		return nil, 0xFFFF, err
+	}
 
-	/* TODO: Unmarshal and return rcode and answers */
+	/* Wait for the reply */
+	ans, ok := <-ach
+	if !ok {
+		/* Answer didn't arrive in time */
+		return nil, 0xFFFF, ErrAnswerTimeout
+	}
 
-	return nil, nil /* DEBUG */
+	return ans.Answers, ans.Header.RCode, nil
 }
 
 /* queryServers makes a query via the configured server(s) */
 func (r *resolver) queryServers(qm *dnsmessage.Message) (
 	[]dnsmessage.Resource,
-	dnsmessage.Rcode,
+	dnsmessage.RCode,
 	error,
 ) {
 	/* Work out how to query based on r.queryMethod */
@@ -205,5 +267,5 @@ func (r *resolver) queryServers(qm *dnsmessage.Message) (
 	}
 
 	/* TODO: Finish this */
-	return nil, nil /* DEBUG */
+	return nil, 0xFFFF, nil /* DEBUG */
 }

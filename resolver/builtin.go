@@ -11,6 +11,7 @@ package resolver
 import (
 	"errors"
 	"net"
+	"time"
 )
 
 // ErrNotImplemented is returned by StdlibResolver's LookupAC and LookupAAAAAC
@@ -174,3 +175,6 @@ func (s stdlib) LookupSRV(name string) ([]SRV, error) {
 
 	return ret, nil
 }
+
+// QueryTimeout is a no-op.
+func (s stdlib) QueryTimeout(time.Duration) {}
