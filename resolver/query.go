@@ -5,20 +5,17 @@ package resolver
  * perform a query
  * By J. Stuart McMurray
  * Created 20180926
- * Last Modified 20181003
+ * Last Modified 20181009
  */
 
 import (
 	"encoding/binary"
 	"errors"
+	"strconv"
 	"strings"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
-
-// MAXCNAMEDEPTH is the maximum depth of CNAME recursion which will be
-// performed.
-const MAXCNAMEDEPTH = 10
 
 // The following errors correspond to non-success (i.e. not NOERROR) Response
 // Codes returned from DNS servers.
@@ -35,23 +32,11 @@ var (
 var ErrAnswerTimeout = errors.New("timeout waiting for answer")
 
 /* query makes a query for the name and given type and returns all of the
-answers of type atype it gets.  query is equivalent to queryRecurse with a
-depth of MAXCNAMEDEPTH. */
+answers of type atype it gets. */
 func (r *resolver) query(
 	name string,
 	qtype dnsmessage.Type,
 	atype dnsmessage.Type,
-) ([]dnsmessage.Resource, error) {
-	return r.queryRecurse(name, qtype, atype, MAXCNAMEDEPTH)
-}
-
-/* queryRecurse is like Query, but only recurses so many times.  It is used for
-following the trail of CNAMEs. */
-func (r *resolver) queryRecurse(
-	name string,
-	qtype dnsmessage.Type,
-	atype dnsmessage.Type,
-	depth uint, /* TODO: We'll need to follow CNAMES for some things */
 ) ([]dnsmessage.Resource, error) {
 	var err error
 
@@ -102,8 +87,6 @@ func (r *resolver) queryRecurse(
 	/* Filter output by ans.Header.Type */
 	last := 0
 	for _, ans := range anss {
-		/* TODO: Handle CNAMEs */
-
 		/* Make sure answer comes back for the right name */
 		if ans.Header.Name.String() != name {
 			continue
@@ -186,14 +169,8 @@ func (r *resolver) queryPC(qm *dnsmessage.Message) (
 		}
 		binary.BigEndian.PutUint16(sm, uint16(len(m)))
 		copy(sm[2:], m)
-		m = sm
-	}
+		m = sm[:len(m)+2]
 
-	for inUse {
-		if nil != err {
-			r.ansChL.Unlock()
-			return nil, 0, err
-		}
 	}
 
 	/* Send the message */
@@ -222,7 +199,11 @@ func (r *resolver) queryServers(qm *dnsmessage.Message) (
 ) {
 	/* Work out how to query based on r.queryMethod */
 	switch r.queryMethod {
-	/* TODO: Finish this */
+	case RoundRobin:
+	case NextOnFail:
+	case QueryAll:
+	default: /* Should never happen */
+		panic("unknown query method " + strconv.Itoa(r.queryMethod))
 	}
 
 	/* TODO: Finish this */

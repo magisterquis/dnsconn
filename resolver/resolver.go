@@ -8,14 +8,13 @@ package resolver
  * Lightweight DNS resolver
  * By J. Stuart McMurray
  * Created 20180925
- * Last Modified 20181003
+ * Last Modified 20181009
  */
 
 import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -70,7 +69,6 @@ type SRV struct {
 // Resolver implements a lightweight DNS resolver.
 type Resolver interface {
 	// LookupA returns the A records (IPv4 addresses) for the given name.
-	// CNAME records, if returned, will be resolved into A records.
 	LookupA(name string) ([][4]byte, error)
 
 	//// LookupAC performs a query for A records for the given name, but
@@ -93,8 +91,7 @@ type Resolver interface {
 	//LookupTXT(name string) ([]string, error)
 
 	//// LookupAAAA looks up the AAAA records (IPv6 addresses) for the given
-	//// name.  CNAME records, if returned, will be resolved into AAAA
-	//// records.
+	//// name.
 	//LookupAAAA(name string) ([][16]byte, error)
 
 	//// LookupAAAAC performs a query for AAAA records for the given name,
@@ -113,20 +110,27 @@ const buflen = 65536
 
 /* resolver is the built-in implementation of Resolver */
 type resolver struct {
-	conn        net.Conn
-	isPC        bool /* Is conn a net.PacketConn? */
-	cech        chan error
-	connL       sync.Mutex
+	/* Used if we were given a conn */
+	isPC  bool /* Is conn a net.PacketConn? */
+	conn  net.Conn
+	cech  chan error
+	connL sync.Mutex
+
+	/* Used if we have multiple servers to query */
 	servers     []net.IP
+	nextServer  int
 	queryMethod QueryMethod
-	bufpool     *sync.Pool
-	upool       *sync.Pool
+
+	/* Buffer pools */
+	bufpool *sync.Pool
+	upool   *sync.Pool
 
 	/* Answers to queries are sent here */
 	ansCh  map[uint16]chan<- *dnsmessage.Message
 	ansChL sync.Mutex
 
-	qto  time.Duration /* Query timeout */
+	/* Query timeout */
+	qto  time.Duration
 	qtoL sync.RWMutex
 }
 
@@ -155,18 +159,15 @@ func NewResolver(servers []net.IP, method QueryMethod) (Resolver, error) {
 func NewResolverFromConn(c net.Conn) (Resolver, <-chan error) {
 	res := newResolver()
 	res.conn = c
-	res.ech = make(chan error)
+	res.cech = make(chan error)
 	if _, ok := c.(net.PacketConn); ok {
 		res.isPC = true
 	}
 
 	/* Listen on Conn for answers */
-	go res.listenforanswers()
+	go res.listenForAnswers()
 
-	return res, res.ech
-
-	/* TODO: Listen on conn for answers.  If an answer comes back for a DNS
-	ID in ansCh, send it back and close the channel. */
+	return res, res.cech
 }
 
 /* newResolver makes and initializes as much of a resolver as can be
@@ -204,62 +205,10 @@ func (r *resolver) randUint16() (uint16, error) {
 	return binary.LittleEndian.Uint16(b), nil
 }
 
-/* listenForAnswers listens on r.conn for DNS answers and sends them to the
-appropriate channel in r.ansCh. */
-func (r *resolver) listenForAnswers() {
-	var (
-		/* Read buffers */
-		sbuf = r.upool.Get().([]byte)
-		pbuf = r.bufpool.Get().([]byte)
-		n    int
-		size uint16
-		err  error
-	)
-
-	for {
-		/* Reset the size */
-		size = uint16(len(pbuf))
-
-		/* Grab a query */
-		if !r.isPC {
-			/* Grab the size */
-			_, err = io.ReadFull(r.conn, sbuf)
-			if nil != err {
-				go r.sendErr(err, true)
-				return
-			}
-			size = binary.Uint16(sbuf)
-			/* Grab the query */
-			_, err = io.ReadFull(r.conn, pbuf[:size])
-			if nil != err {
-				go r.sendErr(err, true)
-				return
-			}
-		} else {
-			n, err = r.conn.Read(pbuf)
-			if nil != err {
-				go r.sendErr(err, true)
-				return
-			}
-			size = uint16(n)
-		}
-
-		/* Unmarshal it */
-		msg := new(dnsmessage.Message)
-		if err := msg.Unpack(pbuf[:size]); nil != err {
-			go r.sendErr(err, false)
-			continue
-		}
-
-		/* Work out where to send it */
-		ch, ok := msg.Header.ID
-	}
-}
-
-/* sendErr sends an error to r.cech if it is not already closed.  If close is
+/* sendErr sends an error to r.cech if it is not already closed.  If closeCh is
 true, the channel will be closed.  sendErr should probably always be called
 in a goroutine. */
-func (r *resolver) sendErr(err error, close bool) {
+func (r *resolver) sendErr(err error, closeCh bool) {
 	r.connL.Lock()
 	defer r.connL.Unlock()
 	/* If the channel has been closed, don't bother */
@@ -269,74 +218,27 @@ func (r *resolver) sendErr(err error, close bool) {
 	/* Send the error on the channel */
 	r.cech <- err
 	/* Close the channel if we're meant to */
-	close(r.cech)
-	r.cech = nil
-}
-
-/* newAnsChannel registers a channel in r on which will be sent a reply to a
-query with the returned ID.  The channel will be closed after the timeout. */
-func (r *resolver) newAnsChannel() (
-	id uint16,
-	ch <-chan *dnsmessage.Message,
-	err error,
-) {
-	r.ansChL.Lock()
-	r.ansChL.Unlock()
-
-	/* If there's already uint16Max outstanding queries, give up */
-	if 0xFFFF <= len(r.ansCh) {
-		return ErrTooManyQueries
+	if closeCh {
+		close(r.cech)
+		r.cech = nil
 	}
-
-	/* Find a unique ID */
-	id, err = r.randUint16()
-	if nil != err {
-		return 0, nil, err
-	}
-	for {
-		if _, inUse := r.ansCh[id]; !inUse {
-			break
-		}
-		id++
-	}
-
-	/* Register the channel */
-	ch = make(chan *dnsmessage.Message)
-	r.ansCh[id] = ch
-
-	/* Close the channel if the message takes too long to come back */
-	go func() {
-		/* Work out how long to sleep before killing the channel */
-		r.qtoL.RLock()
-		to := r.qto
-		r.qtoL.RUnlock()
-		/* Wait until the timeout */
-		time.Sleep(to)
-		/* Grab hold of the channel if we have one */
-		r.ansChL.Lock()
-		defer r.ansChL.Unlock()
-		ach, ok := r.ansCh[id]
-		/* If we don't actually have a channel or if this isn't the
-		right channel for this ID (because of ID reuse), we're done */
-		if !ok || ach != ch {
-			return
-		}
-		/* Close the channel and remove it from the map */
-		delete(r.ansCh, id)
-		close(ch)
-		/* Drain the channel after we closed it to avoid
-		channel leakage.  There's a small race here where the answer
-		could come in right before the close and the drain loop gets it
-		before the real reader which is more or less equivalent to the
-		answer coming past the timeout. */
-		for _ = range ach {
-			/* Drain */
-		}
-	}()
 }
 
 /* sendAnsChannel sends a to the appropriate answer channel (if it exists),
 closes it and removes the channel from r. */
 func (r *resolver) sendAnsChannel(a *dnsmessage.Message) {
-	/* TODO: Finish this */
+	r.ansChL.Lock()
+	r.ansChL.Unlock()
+
+	/* See if we have the channel */
+	ch, ok := r.ansCh[a.Header.ID]
+	if !ok { /* Didn't ask for this or it's a duplicate */
+		return
+	}
+
+	/* If we have it, remove the channel from the map and send the answer
+	back */
+	delete(r.ansCh, a.Header.ID)
+	ch <- a
+	close(ch)
 }
