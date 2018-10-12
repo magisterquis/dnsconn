@@ -148,17 +148,109 @@ func (r *resolver) query(
 	return anss[:last], nil
 }
 
-/* TODO: Finish this */
-func (c *resolver) roundRobin(qm *dnsmessage.Message) ([]dnsmessage.Resource, dnsmessage.RCode, error) {
-	return nil, 0, nil
+/* roundRobin tries each server in turn */
+func (r *resolver) roundRobin(qm *dnsmessage.Message) (
+	[]dnsmessage.Resource,
+	dnsmessage.RCode,
+	error,
+) {
+	/* If we were passed-in a conn and no address, use that */
+	if 1 == len(r.conns) && nil == r.servers {
+		/* Even if we get an error back, never remove the conn so that
+		each query will return the error. */
+		return r.conns[0].query(qm)
+	}
+
+	/* Try the next conn in the list */
+	c, err := r.nextRRConn()
+	if nil != err {
+		return nil, 0xFFFF, err
+	}
+	return c.query(qm)
 }
 
-/* TODO: Finish this */
-func (c *resolver) nextOnFail(qm *dnsmessage.Message) ([]dnsmessage.Resource, dnsmessage.RCode, error) {
-	return nil, 0, nil
+/* nextOnFail queries all of the resolvers in turn */
+func (r *resolver) nextOnFail(qm *dnsmessage.Message) ([]dnsmessage.Resource, dnsmessage.RCode, error) {
+	var (
+		c   *conn
+		rs  []dnsmessage.Resource
+		rc  dnsmessage.RCode
+		err error
+	)
+	/* Try each server in turn */
+	for i := 0; 0 == len(rs) && len(r.servers) > i; i++ {
+		c, err = r.getOrDialConn(i)
+		if nil != err {
+			/* TODO: Can we find something better to do here? */
+			continue
+		}
+		rs, rc, err = c.query(qm)
+	}
+	return rs, rc, err
 }
 
-/* TODO: Finish this */
-func (c *resolver) queryAll(qm *dnsmessage.Message) ([]dnsmessage.Resource, dnsmessage.RCode, error) {
-	return nil, 0, nil
+/* queryAll queries all of the resolvers simultaneously */
+func (r *resolver) queryAll(qm *dnsmessage.Message) ([]dnsmessage.Resource, dnsmessage.RCode, error) {
+	var (
+		err  error
+		n    int /* Number of servers queried */
+		rsch = make(chan []dnsmessage.Resource)
+		rcch = make(chan dnsmessage.RCode)
+		ech  = make(chan error)
+	)
+	/* Fire off all the queries */
+	for i := range r.servers {
+		/* Grab a conn */
+		var c *conn
+		c, err = r.getOrDialConn(i)
+		if nil != err {
+			continue
+		}
+		/* New query, to prevent IDs being overwritten */
+		q := *qm
+		/* Do the query */
+		go func() {
+			ors, orc, oerr := c.query(&q)
+			rsch <- ors
+			rcch <- orc
+			ech <- oerr
+		}()
+		n++
+	}
+
+	/* Gather query results */
+	var (
+		success bool /* True if we got a non-nxdomain */
+		rs      []dnsmessage.Resource
+		rc      dnsmessage.RCode
+	)
+	for i := 0; i < n; i++ {
+		/* Get any resources we have */
+		trs := <-rsch
+		if nil != trs {
+			rs = append(rs, trs...)
+		}
+
+		/* Get an rcode, we'll return the last one we get */
+		rc = <-rcch
+		/* Though, if any of them are SUCCESS, use that */
+		if dnsmessage.RCodeSuccess == rc {
+			success = true
+		}
+
+		/* We'll also use the last error we got. */
+		err = <-ech
+	}
+
+	/* If we at all got answers, we have success */
+	if 0 != len(rs) {
+		err = nil
+		rc = dnsmessage.RCodeSuccess
+	}
+	/* If we had a SUCCESS but no answers, that counts */
+	if success {
+		rc = dnsmessage.RCodeSuccess
+	}
+
+	return rs, rc, err
 }

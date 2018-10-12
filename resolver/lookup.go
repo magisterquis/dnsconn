@@ -9,12 +9,10 @@ package resolver
  */
 
 import (
-	"log"
-
 	"golang.org/x/net/dns/dnsmessage"
 )
 
-/* lookupA looks up A records */
+// LookupA looks up A records
 func (r *resolver) LookupA(name string) ([][4]byte, error) {
 	/* Make the query */
 	rs, err := r.query(name, dnsmessage.TypeA, dnsmessage.TypeA)
@@ -25,12 +23,44 @@ func (r *resolver) LookupA(name string) ([][4]byte, error) {
 	/* Extract the important bits */
 	as := make([][4]byte, len(rs))
 	for i, r := range rs {
-		a, ok := r.Body.(*dnsmessage.AResource)
-		if !ok { /* Should never happen */
-			log.Panicf("invalid A record type %T", r)
-		}
-		as[i] = a.A
+		as[i] = r.Body.(*dnsmessage.AResource).A
 	}
 
 	return as, nil
 }
+
+// LookupAC does queries for A records and expects CNAMEs in reply
+func (r *resolver) LookupAC(name string) ([]string, error) {
+	/* Make the query */
+	rs, err := r.query(name, dnsmessage.TypeA, dnsmessage.TypeCNAME)
+	if nil != err {
+		return nil, err
+	}
+
+	/* Extract the important bits */
+	cs := make([]string, len(rs))
+	for i, r := range rs {
+		cs[i] = r.Body.(*dnsmessage.CNAMEResource).CNAME.String()
+	}
+
+	return cs, nil
+}
+
+// LookupNS looks up NS records
+func (r *resolver) LookupNS(name string) ([]string, error) {
+	/* Make the query */
+	rs, err := r.query(name, dnsmessage.TypeNS, dnsmessage.TypeNS)
+	if nil != err {
+		return nil, err
+	}
+
+	/* Extract the important bits */
+	as := make([]string, len(rs))
+	for i, r := range rs {
+		as[i] = r.Body.(*dnsmessage.NSResource).NS.String()
+	}
+
+	return as, nil
+}
+
+/* TODO: Finish implementing these */

@@ -32,18 +32,24 @@ const (
 	// returns an answer or the list of servers is exhausted.
 	NextOnFail
 
-	// QueryAll causes all servers to be tried for every query.
+	// QueryAll causes all servers to be tried for every query.  Duplicate
+	// replies are possible if multiple servers return identical replies.
 	QueryAll
 )
 
-// QUERYTIMEOUT is the default query timeout
-const QUERYTIMEOUT = 10 * time.Second
+const (
+	// QUERYTIMEOUT is the default query timeout
+	QUERYTIMEOUT = 10 * time.Second
+
+	// RETRYINTERVAL is the default interval between retries
+	RETRYINTERVAL = 3 * time.Second
+)
 
 // StdlibResolver is a Resolver which wraps the net.Lookup* functions.  The
 // Resolver's LookupAC and LookupAAAAC methods will always return errors and
 // its LookupA and LookupAAAA methods will both make queries for both A and
-// AAAA records.  StblibResolver.QueryTimeout is a no-op.  The default
-// net.Lookup* timeouts are used instead.
+// AAAA records.  StblibResolver.QueryTimeout and StdlibResolver.RetryInterval
+// are no-ops.  The default net.Lookup* timeouts are used instead.
 var StdlibResolver Resolver = stdlibResolver()
 
 // ErrTooManyQueries is returned when there are too many outstanding queries.
@@ -71,10 +77,10 @@ type Resolver interface {
 
 	//// LookupAC performs a query for A records for the given name, but
 	//// expects and returns only CNAME records sent in the reply.
-	//LookupAC(name string) ([]string, error)
+	LookupAC(name string) ([]string, error)
 
 	//// LookupNS returns the NS records for the given name.
-	//LookupNS(name string) ([]string, error)
+	LookupNS(name string) ([]string, error)
 
 	//// LookupCNAME returns the CNAME records for the given name.
 	//LookupCNAME(name string) ([]string, error)
@@ -101,6 +107,12 @@ type Resolver interface {
 
 	// QueryTimeout sets the timeout for receiving responses to queries.
 	QueryTimeout(to time.Duration)
+
+	// RetryInterval sets the interval between resending queries if no
+	// response has been received on a datagram-oriented (i.e.
+	// net.PacketConn) connection.  If this is set to a duration larger
+	// than QueryTimeout, queries will not be resent.
+	RetryInterval(rint time.Duration)
 }
 
 /* buflen is the size of the buffers kept in the resolver's pool */
@@ -110,9 +122,10 @@ const buflen = 65536
 type resolver struct {
 	/* Connections to use */
 	servers []net.Addr
-	conns   []conn
-	connsN  int
+	conns   []*conn
+	connsI  int
 	connsL  *sync.Mutex
+	connsLs []*sync.Mutex /* Per-conn lock */
 
 	/* Used if we have multiple servers to query */
 	nextServer  int
@@ -122,14 +135,15 @@ type resolver struct {
 	bufpool *sync.Pool
 	upool   *sync.Pool
 
-	/* Query timeout */
+	/* Query timeout and retry interval */
 	qto  time.Duration
-	qtoL sync.RWMutex
+	rint time.Duration
+	qtoL sync.RWMutex /* We'll use this for both. */
 }
 
 // NewResolver returns a resolver which makes queries to the given servers.
 // How the servers are queried is determined by method.
-func NewResolver(servers []net.Addr, method QueryMethod) (Resolver, error) {
+func NewResolver(method QueryMethod, servers ...net.Addr) (Resolver, error) {
 	/* Make sure we actually have servers */
 	if 0 == len(servers) {
 		return nil, errors.New("no servers specified")
@@ -143,6 +157,11 @@ func NewResolver(servers []net.Addr, method QueryMethod) (Resolver, error) {
 	/* Return an initialized resolver */
 	res := newResolver()
 	res.servers = servers
+	res.conns = make([]*conn, len(servers))
+	res.connsLs = make([]*sync.Mutex, len(res.conns))
+	for i := range res.connsLs {
+		res.connsLs[i] = new(sync.Mutex)
+	}
 	res.queryMethod = method
 	return res, nil
 }
@@ -170,12 +189,13 @@ func newResolver() *resolver {
 		bufpool: newBufPool(buflen),
 		upool:   newBufPool(2),
 		qto:     QUERYTIMEOUT,
+		rint:    RETRYINTERVAL,
 	}
 }
 
 /* newConn makes a new conn for the resolver */
-func (r *resolver) newConn(c net.Conn) conn {
-	ret := conn{
+func (r *resolver) newConn(c net.Conn) *conn {
+	ret := &conn{
 		r:      r,
 		c:      c,
 		txL:    new(sync.Mutex),
@@ -196,6 +216,14 @@ func (r *resolver) QueryTimeout(to time.Duration) {
 	r.qto = to
 }
 
+// RetryInterval sets the interval between query resends if no response has
+// been received.
+func (r *resolver) RetryInterval(rint time.Duration) {
+	r.qtoL.Lock()
+	defer r.qtoL.Unlock()
+	r.rint = rint
+}
+
 /* newBufPool returns a new sync.Pool which holds buffers of the given size. */
 func newBufPool(size uint) *sync.Pool {
 	return &sync.Pool{New: func() interface{} {
@@ -212,3 +240,40 @@ func (r *resolver) randUint16() (uint16, error) {
 	}
 	return binary.LittleEndian.Uint16(b), nil
 }
+
+/* nextRRConn returns the next conn from r, round-robin. */
+func (r *resolver) nextRRConn() (*conn, error) {
+	/* Work out which conn to use */
+	r.connsL.Lock()
+	i := r.connsI
+	r.connsI++
+	r.connsI %= len(r.servers)
+	r.connsL.Unlock()
+
+	/* Make sure it exists and use it */
+	return r.getOrDialConn(i)
+
+}
+
+/* getOrDialConn gets the ith conn, or dial it if needed */
+func (r *resolver) getOrDialConn(i int) (*conn, error) {
+	/* Grab hold of the conn */
+	r.connsLs[i].Lock()
+	defer r.connsLs[i].Unlock()
+
+	/* If it's nil or there's been an error, redial */
+	if nil == r.conns[i] || nil != r.conns[i].getErr() {
+		c, err := net.Dial(
+			r.servers[i].Network(),
+			r.servers[i].String(),
+		)
+		if nil != err {
+			return nil, err
+		}
+		r.conns[i] = r.newConn(c)
+	}
+
+	return r.conns[i], nil
+}
+
+/* TODO: Handle a network of tls */
