@@ -8,7 +8,7 @@ package resolver
  * Lightweight DNS resolver
  * By J. Stuart McMurray
  * Created 20180925
- * Last Modified 20181009
+ * Last Modified 20181011
  */
 
 import (
@@ -18,8 +18,6 @@ import (
 	"net"
 	"sync"
 	"time"
-
-	"golang.org/x/net/dns/dnsmessage"
 )
 
 // QueryMethod is used to configure which server(s) are queried by resolver
@@ -110,24 +108,19 @@ const buflen = 65536
 
 /* resolver is the built-in implementation of Resolver */
 type resolver struct {
-	/* Used if we were given a conn */
-	isPC  bool /* Is conn a net.PacketConn? */
-	conn  net.Conn
-	cech  chan error
-	connL sync.Mutex
+	/* Connections to use */
+	servers []net.Addr
+	conns   []conn
+	connsN  int
+	connsL  *sync.Mutex
 
 	/* Used if we have multiple servers to query */
-	servers     []net.IP
 	nextServer  int
 	queryMethod QueryMethod
 
 	/* Buffer pools */
 	bufpool *sync.Pool
 	upool   *sync.Pool
-
-	/* Answers to queries are sent here */
-	ansCh  map[uint16]chan<- *dnsmessage.Message
-	ansChL sync.Mutex
 
 	/* Query timeout */
 	qto  time.Duration
@@ -136,10 +129,15 @@ type resolver struct {
 
 // NewResolver returns a resolver which makes queries to the given servers.
 // How the servers are queried is determined by method.
-func NewResolver(servers []net.IP, method QueryMethod) (Resolver, error) {
+func NewResolver(servers []net.Addr, method QueryMethod) (Resolver, error) {
 	/* Make sure we actually have servers */
 	if 0 == len(servers) {
 		return nil, errors.New("no servers specified")
+	}
+
+	/* Make sure the method is ok */
+	if method != RoundRobin && method != NextOnFail && method != QueryAll {
+		return nil, errors.New("unknown query method")
 	}
 
 	/* Return an initialized resolver */
@@ -156,29 +154,39 @@ func NewResolver(servers []net.IP, method QueryMethod) (Resolver, error) {
 // responses will be sent to the returned channel which will be closed when
 // no more responses are able to be read (usually due to c being closed).  The
 // channel must be serviced or resolution will hang.
-func NewResolverFromConn(c net.Conn) (Resolver, <-chan error) {
+func NewResolverFromConn(c net.Conn) Resolver {
 	res := newResolver()
-	res.conn = c
-	res.cech = make(chan error)
-	if _, ok := c.(net.PacketConn); ok {
-		res.isPC = true
-	}
+	res.conns = append(res.conns, res.newConn(c))
+	res.queryMethod = RoundRobin
 
-	/* Listen on Conn for answers */
-	go res.listenForAnswers()
-
-	return res, res.cech
+	return res
 }
 
 /* newResolver makes and initializes as much of a resolver as can be
 initialized without a conn or query method */
 func newResolver() *resolver {
 	return &resolver{
+		connsL:  new(sync.Mutex),
 		bufpool: newBufPool(buflen),
 		upool:   newBufPool(2),
-		ansCh:   make(map[uint16]chan<- *dnsmessage.Message),
 		qto:     QUERYTIMEOUT,
 	}
+}
+
+/* newConn makes a new conn for the resolver */
+func (r *resolver) newConn(c net.Conn) conn {
+	ret := conn{
+		r:      r,
+		c:      c,
+		txL:    new(sync.Mutex),
+		ansCh:  make(map[uint16]chan<- ansOrErr),
+		ansChL: new(sync.Mutex),
+		errL:   new(sync.Mutex),
+	}
+	_, ok := c.(net.PacketConn)
+	ret.isPC = ok
+	go ret.listenForAnswers()
+	return ret
 }
 
 // QueryTimeout sets the timeout for responses to queries.
@@ -203,42 +211,4 @@ func (r *resolver) randUint16() (uint16, error) {
 		return 0, err
 	}
 	return binary.LittleEndian.Uint16(b), nil
-}
-
-/* sendErr sends an error to r.cech if it is not already closed.  If closeCh is
-true, the channel will be closed.  sendErr should probably always be called
-in a goroutine. */
-func (r *resolver) sendErr(err error, closeCh bool) {
-	r.connL.Lock()
-	defer r.connL.Unlock()
-	/* If the channel has been closed, don't bother */
-	if nil == r.cech {
-		return
-	}
-	/* Send the error on the channel */
-	r.cech <- err
-	/* Close the channel if we're meant to */
-	if closeCh {
-		close(r.cech)
-		r.cech = nil
-	}
-}
-
-/* sendAnsChannel sends a to the appropriate answer channel (if it exists),
-closes it and removes the channel from r. */
-func (r *resolver) sendAnsChannel(a *dnsmessage.Message) {
-	r.ansChL.Lock()
-	r.ansChL.Unlock()
-
-	/* See if we have the channel */
-	ch, ok := r.ansCh[a.Header.ID]
-	if !ok { /* Didn't ask for this or it's a duplicate */
-		return
-	}
-
-	/* If we have it, remove the channel from the map and send the answer
-	back */
-	delete(r.ansCh, a.Header.ID)
-	ch <- a
-	close(ch)
 }

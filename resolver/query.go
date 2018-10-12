@@ -5,11 +5,10 @@ package resolver
  * perform a query
  * By J. Stuart McMurray
  * Created 20180926
- * Last Modified 20181009
+ * Last Modified 20181011
  */
 
 import (
-	"encoding/binary"
 	"errors"
 	"strconv"
 	"strings"
@@ -56,15 +55,23 @@ func (r *resolver) query(
 		return nil, err
 	}
 
-	/* Query either via the packetconn or server(s) */
+	/* Send it out as appropriate */
 	var (
 		anss  []dnsmessage.Resource
 		rcode dnsmessage.RCode
 	)
-	if nil != r.conn {
-		anss, rcode, err = r.queryPC(qm)
-	} else {
-		anss, rcode, err = r.queryServers(qm)
+	switch r.queryMethod {
+	case RoundRobin:
+		anss, rcode, err = r.roundRobin(qm)
+	case NextOnFail:
+		anss, rcode, err = r.nextOnFail(qm)
+	case QueryAll:
+		anss, rcode, err = r.queryAll(qm)
+	default:
+		panic(
+			"unknown query method " +
+				strconv.Itoa(int(r.queryMethod)),
+		)
 	}
 	if nil != err {
 		return nil, err
@@ -141,71 +148,17 @@ func (r *resolver) query(
 	return anss[:last], nil
 }
 
-/* queryPC makes a query via the "connected" packetconn */
-func (r *resolver) queryPC(qm *dnsmessage.Message) (
-	[]dnsmessage.Resource,
-	dnsmessage.RCode,
-	error,
-) {
-
-	/* Get the query ID as well as the channel from which to read it */
-	id, ch, err := r.newAnsChannel()
-
-	/* Add the ID and roll the message */
-	qm.Header.ID = id
-	qbuf := r.bufpool.Get().([]byte)
-	defer r.bufpool.Put(qbuf)
-	m, err := qm.AppendPack(qbuf[:0])
-	if nil != err {
-		return nil, 0, err
-	}
-
-	/* If we're not sending on a packetconn, add the size */
-	if !r.isPC {
-		sm := r.bufpool.Get().([]byte)
-		defer r.bufpool.Put(sm)
-		if len(sm)-2 < len(m) {
-			return nil, 0, errors.New("message too large")
-		}
-		binary.BigEndian.PutUint16(sm, uint16(len(m)))
-		copy(sm[2:], m)
-		m = sm[:len(m)+2]
-
-	}
-
-	/* Send the message */
-	r.connL.Lock()
-	_, err = r.conn.Write(m)
-	r.connL.Unlock()
-	if nil != err {
-		return nil, 0xFFFF, err
-	}
-
-	/* Wait for the reply */
-	ans, ok := <-ch
-	if !ok {
-		/* Answer didn't arrive in time */
-		return nil, 0xFFFF, ErrAnswerTimeout
-	}
-
-	return ans.Answers, ans.Header.RCode, nil
+/* TODO: Finish this */
+func (c *resolver) roundRobin(qm *dnsmessage.Message) ([]dnsmessage.Resource, dnsmessage.RCode, error) {
+	return nil, 0, nil
 }
 
-/* queryServers makes a query via the configured server(s) */
-func (r *resolver) queryServers(qm *dnsmessage.Message) (
-	[]dnsmessage.Resource,
-	dnsmessage.RCode,
-	error,
-) {
-	/* Work out how to query based on r.queryMethod */
-	switch r.queryMethod {
-	case RoundRobin:
-	case NextOnFail:
-	case QueryAll:
-	default: /* Should never happen */
-		panic("unknown query method " + strconv.Itoa(r.queryMethod))
-	}
+/* TODO: Finish this */
+func (c *resolver) nextOnFail(qm *dnsmessage.Message) ([]dnsmessage.Resource, dnsmessage.RCode, error) {
+	return nil, 0, nil
+}
 
-	/* TODO: Finish this */
-	return nil, 0xFFFF, nil /* DEBUG */
+/* TODO: Finish this */
+func (c *resolver) queryAll(qm *dnsmessage.Message) ([]dnsmessage.Resource, dnsmessage.RCode, error) {
+	return nil, 0, nil
 }
