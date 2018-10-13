@@ -70,6 +70,14 @@ type SRV struct {
 	Target   string
 }
 
+/* serverAddr holds the info needed for dialing a server */
+type serverAddr struct {
+	net  string
+	addr string
+}
+
+/* TODO: parse addresses passed into newresolver into serverAddrs, allow for tcp:// */
+
 // Resolver implements a lightweight DNS resolver.
 type Resolver interface {
 	// LookupA returns the A records (IPv4 addresses) for the given name.
@@ -82,28 +90,28 @@ type Resolver interface {
 	//// LookupNS returns the NS records for the given name.
 	LookupNS(name string) ([]string, error)
 
-	//// LookupCNAME returns the CNAME records for the given name.
-	//LookupCNAME(name string) ([]string, error)
+	// LookupCNAME returns the CNAME records for the given name.
+	LookupCNAME(name string) ([]string, error)
 
-	//// LookupPTR looks up the PTR records for the given IP address.
-	//LookupPTR(addr net.IP) ([]string, error)
+	// LookupPTR looks up the PTR records for the given IP address.
+	LookupPTR(addr net.IP) ([]string, error)
 
-	//// LookupMX looks up the MX records for the given name.
-	//LookupMX(name string) ([]MX, error)
+	// LookupMX looks up the MX records for the given name.
+	LookupMX(name string) ([]MX, error)
 
-	//// LookupTXT looks up the TXT records for the given name.
-	//LookupTXT(name string) ([]string, error)
+	// LookupTXT looks up the TXT records for the given name.
+	LookupTXT(name string) ([]string, error)
 
-	//// LookupAAAA looks up the AAAA records (IPv6 addresses) for the given
-	//// name.
-	//LookupAAAA(name string) ([][16]byte, error)
+	// LookupAAAA looks up the AAAA records (IPv6 addresses) for the given
+	// name.
+	LookupAAAA(name string) ([][16]byte, error)
 
-	//// LookupAAAAC performs a query for AAAA records for the given name,
-	//// but expects and returns only CNAME records sent in the reply.
-	//LookupAAAAC(name string) ([]string, error)
+	// LookupAAAAC performs a query for AAAA records for the given name,
+	// but expects and returns only CNAME records sent in the reply.
+	LookupAAAAC(name string) ([]string, error)
 
-	//// LookupSRV looks up the SRV records for the given name.
-	//LookupSRV(name string) ([]SRV, error)
+	// LookupSRV looks up the SRV records for the given name.
+	LookupSRV(name string) ([]SRV, error)
 
 	// QueryTimeout sets the timeout for receiving responses to queries.
 	QueryTimeout(to time.Duration)
@@ -121,7 +129,7 @@ const buflen = 65536
 /* resolver is the built-in implementation of Resolver */
 type resolver struct {
 	/* Connections to use */
-	servers []net.Addr
+	servers []serverAddr
 	conns   []*conn
 	connsI  int
 	connsL  *sync.Mutex
@@ -142,8 +150,11 @@ type resolver struct {
 }
 
 // NewResolver returns a resolver which makes queries to the given servers.
-// How the servers are queried is determined by method.
-func NewResolver(method QueryMethod, servers ...net.Addr) (Resolver, error) {
+// How the servers are queried is determined by method.  The servers should be
+// given as URLs of the form network://address:port.  Any network accepted by
+// net.Dial is accepted, as is "tls", which will cause the DNS queries to be
+// made over a TLS connection.
+func NewResolver(method QueryMethod, servers ...string) (Resolver, error) {
 	/* Make sure we actually have servers */
 	if 0 == len(servers) {
 		return nil, errors.New("no servers specified")
