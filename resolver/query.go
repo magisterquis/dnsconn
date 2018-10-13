@@ -5,7 +5,7 @@ package resolver
  * perform a query
  * By J. Stuart McMurray
  * Created 20180926
- * Last Modified 20181011
+ * Last Modified 20181013
  */
 
 import (

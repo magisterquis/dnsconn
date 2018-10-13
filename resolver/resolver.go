@@ -8,14 +8,17 @@ package resolver
  * Lightweight DNS resolver
  * By J. Stuart McMurray
  * Created 20180925
- * Last Modified 20181011
+ * Last Modified 20181013
  */
 
 import (
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -38,12 +41,15 @@ const (
 )
 
 const (
-	// QUERYTIMEOUT is the default query timeout
-	QUERYTIMEOUT = 10 * time.Second
+	// TIMEOUT is the default query and connect timeout
+	TIMEOUT = 10 * time.Second
 
 	// RETRYINTERVAL is the default interval between retries
 	RETRYINTERVAL = 3 * time.Second
 )
+
+/* defport is the default DNS port */
+const defport = "53"
 
 // StdlibResolver is a Resolver which wraps the net.Lookup* functions.  The
 // Resolver's LookupAC and LookupAAAAC methods will always return errors and
@@ -75,8 +81,6 @@ type serverAddr struct {
 	net  string
 	addr string
 }
-
-/* TODO: parse addresses passed into newresolver into serverAddrs, allow for tcp:// */
 
 // Resolver implements a lightweight DNS resolver.
 type Resolver interface {
@@ -113,8 +117,9 @@ type Resolver interface {
 	// LookupSRV looks up the SRV records for the given name.
 	LookupSRV(name string) ([]SRV, error)
 
-	// QueryTimeout sets the timeout for receiving responses to queries.
-	QueryTimeout(to time.Duration)
+	// Timeout sets the timeout for connecting to servers and receiving
+	// responses to queries.
+	Timeout(to time.Duration)
 
 	// RetryInterval sets the interval between resending queries if no
 	// response has been received on a datagram-oriented (i.e.
@@ -151,9 +156,10 @@ type resolver struct {
 
 // NewResolver returns a resolver which makes queries to the given servers.
 // How the servers are queried is determined by method.  The servers should be
-// given as URLs of the form network://address:port.  Any network accepted by
+// given as URLs of the form network://address[:port].  Any network accepted by
 // net.Dial is accepted, as is "tls", which will cause the DNS queries to be
-// made over a TLS connection.
+// made over a TLS connection.  If a port is omitted on addresses which would
+// normally require it (e.g. tcp), port 53 will be used.
 func NewResolver(method QueryMethod, servers ...string) (Resolver, error) {
 	/* Make sure we actually have servers */
 	if 0 == len(servers) {
@@ -165,15 +171,46 @@ func NewResolver(method QueryMethod, servers ...string) (Resolver, error) {
 		return nil, errors.New("unknown query method")
 	}
 
-	/* Return an initialized resolver */
+	/* Resolver to return */
 	res := newResolver()
-	res.servers = servers
+	res.queryMethod = method
+
+	/* Add the servers */
+	res.servers = make([]serverAddr, len(servers))
+	for i, server := range servers {
+		/* Split apart the server */
+		parts := strings.SplitN(server, "://", 2)
+		if 2 != len(parts) {
+			return nil, fmt.Errorf("invalid server %q", server)
+		}
+
+		/* Make sure the address has an address and add a port if
+		needed */
+		switch parts[0] {
+		case "tcp", "tcp4", "tcp6", "udp", "udp4", "udp6", "tls":
+			h, _, err := net.SplitHostPort(parts[1])
+			if nil != err && strings.HasSuffix(
+				err.Error(),
+				"missing port in address",
+			) { /* Missing port */
+				parts[1] = net.JoinHostPort(parts[1], defport)
+			} else if "" == h { /* No address */
+				return nil, fmt.Errorf(
+					"missing address in %q",
+					server,
+				)
+			}
+		}
+
+		res.servers[i] = serverAddr{parts[0], parts[1]}
+	}
+	/* Add space for the conns and locks */
 	res.conns = make([]*conn, len(servers))
-	res.connsLs = make([]*sync.Mutex, len(res.conns))
+	res.connsLs = make([]*sync.Mutex, len(servers))
 	for i := range res.connsLs {
 		res.connsLs[i] = new(sync.Mutex)
 	}
-	res.queryMethod = method
+
 	return res, nil
 }
 
@@ -199,7 +236,7 @@ func newResolver() *resolver {
 		connsL:  new(sync.Mutex),
 		bufpool: newBufPool(buflen),
 		upool:   newBufPool(2),
-		qto:     QUERYTIMEOUT,
+		qto:     TIMEOUT,
 		rint:    RETRYINTERVAL,
 	}
 }
@@ -220,8 +257,8 @@ func (r *resolver) newConn(c net.Conn) *conn {
 	return ret
 }
 
-// QueryTimeout sets the timeout for responses to queries.
-func (r *resolver) QueryTimeout(to time.Duration) {
+// Timeout sets the timeout for dials and responses to queries.
+func (r *resolver) Timeout(to time.Duration) {
 	r.qtoL.Lock()
 	defer r.qtoL.Unlock()
 	r.qto = to
@@ -272,19 +309,39 @@ func (r *resolver) getOrDialConn(i int) (*conn, error) {
 	r.connsLs[i].Lock()
 	defer r.connsLs[i].Unlock()
 
-	/* If it's nil or there's been an error, redial */
+	/* Dial timeout */
+	r.qtoL.Lock()
+	to := r.qto
+	r.qtoL.Unlock()
+
+	/* If it's not connected or there's been an error, redial */
 	if nil == r.conns[i] || nil != r.conns[i].getErr() {
-		c, err := net.Dial(
-			r.servers[i].Network(),
-			r.servers[i].String(),
+		/* Connect to the server */
+		var (
+			c   net.Conn
+			err error
 		)
+		switch r.servers[i].net {
+		case "tls":
+			c, err = tls.DialWithDialer(
+				&net.Dialer{Timeout: to},
+				"tcp",
+				r.servers[i].addr,
+				nil,
+			)
+		default:
+			c, err = net.DialTimeout(
+				r.servers[i].net,
+				r.servers[i].addr,
+				to,
+			)
+		}
 		if nil != err {
 			return nil, err
 		}
+		/* Store it for future use */
 		r.conns[i] = r.newConn(c)
 	}
 
 	return r.conns[i], nil
 }
-
-/* TODO: Handle a network of tls */

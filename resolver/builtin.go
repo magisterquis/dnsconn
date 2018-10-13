@@ -5,7 +5,7 @@ package resolver
  * Wraps the net.Lookup* functions
  * By J. Stuart McMurray
  * Created 20180925
- * Last Modified 20181012
+ * Last Modified 20181013
  */
 
 import (
@@ -176,8 +176,8 @@ func (s stdlib) LookupSRV(name string) ([]SRV, error) {
 	return ret, nil
 }
 
-// QueryTimeout is a no-op.
-func (s stdlib) QueryTimeout(time.Duration) {}
+// Timeout is a no-op.
+func (s stdlib) Timeout(time.Duration) {}
 
 // RetryInterval is a no-op.
 func (s stdlib) RetryInterval(time.Duration) {}

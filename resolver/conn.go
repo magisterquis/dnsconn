@@ -5,7 +5,7 @@ package resolver
  * Connection to a DNS server
  * By J. Stuart McMurray
  * Created 20181009
- * Last Modified 20181011
+ * Last Modified 20181013
  */
 
 import (
@@ -260,13 +260,13 @@ func (c *conn) query(qm *dnsmessage.Message) (
 
 	/* If we got an error back, that's that */
 	if nil != ans.err {
-		err = ans.err
+		return nil, 0xFFFF, ans.err
 	}
 
 	/* If we didn't get a better error, but the answer channel was closed,
 	it's a timeout */
 	if !ok && nil == err {
-		err = ErrAnswerTimeout
+		return nil, 0xFFFF, ErrAnswerTimeout
 	}
 
 	return ans.answer.Answers, ans.answer.Header.RCode, err
