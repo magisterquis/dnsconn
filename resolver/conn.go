@@ -290,10 +290,10 @@ func (c *conn) stop(err error) {
 	defer c.ansChL.Unlock()
 	for id, ch := range c.ansCh {
 		delete(c.ansCh, id)
-		go func() {
-			ch <- ansOrErr{err: err}
-			close(ch)
-		}()
+		go func(c chan<- ansOrErr) {
+			c <- ansOrErr{err: err}
+			close(c)
+		}(ch)
 	}
 }
 

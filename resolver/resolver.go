@@ -56,7 +56,7 @@ const defport = "53"
 // its LookupA and LookupAAAA methods will both make queries for both A and
 // AAAA records.  StblibResolver.QueryTimeout and StdlibResolver.RetryInterval
 // are no-ops.  The default net.Lookup* timeouts are used instead.
-var StdlibResolver Resolver = stdlibResolver()
+var StdlibResolver = stdlibResolver()
 
 // ErrTooManyQueries is returned when there are too many outstanding queries.
 // Approximate 65k queries can be in flight at once.
