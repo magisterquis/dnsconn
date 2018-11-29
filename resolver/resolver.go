@@ -1,7 +1,8 @@
+package resolver
+
 // Package resolver implements a lightweight DNS resolver
 //
 // It'd be really cool if this all worked.  It's a work in progress.
-package resolver
 
 /*
  * resolver.go
