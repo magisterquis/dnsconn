@@ -9,5 +9,5 @@ package dnsconn
  * Shared variables and such between client and server
  * By J. Stuart McMurray
  * Created 20180924
- * Last Modified 20180925
+ * Last Modified 20181008
  */
