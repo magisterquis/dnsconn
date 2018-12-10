@@ -135,17 +135,11 @@ a client.  An A record in the form of four bytes is returned. */
 func (l *Listener) handleQuery(q string) ([4]byte, error) {
 	var ok bool /* Do we serve this domain? */
 
-	/* Only deal in Upper-case queries, to help with b32ing. */
-	q = strings.ToUpper(q)
-
 	/* Strip off the domain */
 	q, ok = l.removeDomain(q)
 	if !ok {
 		return randARec(), fmt.Errorf("unserved domain")
 	}
-
-	/* Dots and hyphens are arbitrarily placed */
-	q = removeDotsAndHyphens(q)
 
 	/* Handle caching */
 	nca := newCachedAnswer()
@@ -177,12 +171,15 @@ func (l *Listener) handleQuery(q string) ([4]byte, error) {
 }
 
 /* removeDomain returns q with the domain removed, if the domain is a suffix of
-q.  If not, the returned bool is false. */
+q.  If not, the returned bool is false.  The returned string will also be
+lower-cased. */
 func (l *Listener) removeDomain(q string) (string, bool) {
 	/* TODO: Adapt for DGA */
+	/* TODO: Lower-case */
 	return strings.TrimSuffix(q, l.domain), strings.HasSuffix(q, l.domain)
 }
 
+/* TODO: Put the dots and hyphens bit in a seprate, base32-specific file */
 /* dhremover removes dots andhyphens */
 var dhremover = strings.NewReplacer(".", "", "-", "")
 
