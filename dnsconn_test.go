@@ -67,7 +67,8 @@ func TestDNSConn(t *testing.T) {
 		t.Fatalf("Unable to create LookupFunc: %v", err)
 	}
 	c, err := dnsconnclient.Dial(domain, ku, &dnsconnclient.Config{
-		Lookup: lf,
+		Lookup:        lf,
+		MaxPayloadLen: 2,
 	})
 	if nil != err {
 		t.Fatalf("Dial: %v", err)

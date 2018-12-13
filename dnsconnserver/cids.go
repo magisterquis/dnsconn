@@ -38,3 +38,5 @@ func (l *Listener) putCID(cid uint32) {
 
 	l.freeCIDs.PushBack(cid)
 }
+
+/* TODO: Pre-cache all of the one-byte cids in a free list, and have every putCID check if the cid is a multibyte cid and if so, just decrement freeCIDNext if the put cid is the max in play. */

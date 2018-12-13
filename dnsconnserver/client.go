@@ -41,6 +41,7 @@ func (c *Client) handlePayload(p []byte) ([4]byte, error) {
 			panic("client pubkey overflow")
 		}
 		/* If we've got the whole thing, ask for more */
+		/* TODO: Put below in function like c.handleKeyChunk */
 		if len(c.pubkey) == int(c.pklen) {
 			var sk [32]byte
 			box.Precompute(&sk, c.pubkey, c.listener.privkey)

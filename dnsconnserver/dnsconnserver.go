@@ -5,7 +5,7 @@ package dnsconnserver
  * Server side of dnsconn
  * By J. Stuart McMurray
  * Created 20181202
- * Last Modified 20181208
+ * Last Modified 20181212
  */
 
 import (
@@ -110,7 +110,7 @@ func Listen(domain string, pc net.PacketConn, config *Config) (*Listener, error)
 
 	/* TODO: Take config */
 	l := &Listener{
-		domain:   strings.ToUpper("." + strings.Trim(domain, ".") + "."),
+		domain:   strings.ToLower("." + strings.Trim(domain, ".") + "."),
 		cache:    cache,
 		pubkey:   config.Pubkey,
 		privkey:  config.Privkey,
@@ -130,7 +130,7 @@ func Listen(domain string, pc net.PacketConn, config *Config) (*Listener, error)
 	l.newClientsC = sync.NewCond(l.newClientsL)
 	l.pcWG.Add(1)
 
-	/* TODO: Set debug, use DEBUGENVVAR */
+	/* Set debug using DEBUGENVVAR */
 	if _, ok := os.LookupEnv(DEBUGENVVAR); ok {
 		l.debug = log.Printf
 	} else {

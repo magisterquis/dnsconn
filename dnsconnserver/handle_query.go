@@ -135,6 +135,9 @@ a client.  An A record in the form of four bytes is returned. */
 func (l *Listener) handleQuery(q string) ([4]byte, error) {
 	var ok bool /* Do we serve this domain? */
 
+	/* Lower-case query */
+	q = strings.ToLower(q)
+
 	/* Strip off the domain */
 	q, ok = l.removeDomain(q)
 	if !ok {
@@ -175,16 +178,8 @@ q.  If not, the returned bool is false.  The returned string will also be
 lower-cased. */
 func (l *Listener) removeDomain(q string) (string, bool) {
 	/* TODO: Adapt for DGA */
-	/* TODO: Lower-case */
 	return strings.TrimSuffix(q, l.domain), strings.HasSuffix(q, l.domain)
 }
-
-/* TODO: Put the dots and hyphens bit in a seprate, base32-specific file */
-/* dhremover removes dots andhyphens */
-var dhremover = strings.NewReplacer(".", "", "-", "")
-
-/* removeDotsAndHyphens returns s with all of the dots and hyphens removed */
-func removeDotsAndHyphens(s string) string { return dhremover.Replace(s) }
 
 /* randARec returns a random a record starting with FIRSTABYTE */
 func randARec() [4]byte {

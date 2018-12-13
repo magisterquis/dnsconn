@@ -29,13 +29,10 @@ func (l *Listener) handleQuestion(q string) ([4]byte, error) {
 	buf := l.pool.Get().([]byte)
 	defer l.pool.Put(buf)
 
-	/* Get rid of non-base32 characters */
-	if n := strings.IndexAny(q, "WXYZ"); -1 != n {
-		q = string([]rune(q)[:n])
-	}
-
+	/* TODO: Custom decoder which handles removing dots and base32 decoding */
+	q = strings.Replace(q, ".", "", -1)
 	/* Unpack q */
-	n, err := b32decode(buf, []byte(q))
+	n, err := b32decode(buf, []byte(strings.ToUpper(q)))
 	if nil != err {
 		return randARec(), err
 	}

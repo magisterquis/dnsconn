@@ -47,6 +47,7 @@ func (l *Listener) newConn(keychunk []byte) ([4]byte, error) {
 		l:        new(sync.Mutex),
 		listener: l,
 	}
+	/* TODO: Call something like c.handleKeyChunk */
 	c.pklen += uint(copy((*c.pubkey)[:], keychunk))
 
 	/* Stick it in the listener and start a timer to make sure the

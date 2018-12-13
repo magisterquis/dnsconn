@@ -5,13 +5,23 @@ package dnsconnclient
  * Encode messages to queries
  * By J. Stuart McMurray
  * Created 20181209
- * Last Modified 20181209
+ * Last Modified 20181212
  */
 
-import "encoding/base32"
+import (
+	"encoding/base32"
+	"sync"
+)
 
-/* b32er handles base32-encoding things */
-var b32er = base32.HexEncoding.WithPadding(base32.NoPadding)
+var (
+	/* b32er handles base32-encoding things */
+	b32er = base32.HexEncoding.WithPadding(base32.NoPadding)
+
+	/* pool holds the buffer pool for the package */
+	pool = sync.Pool{New: func() interface{} {
+		return make([]byte, buflen)
+	}}
+)
 
 // An EncodingFunc encodes payload such that it can be sent as a DNS request
 // and places it in out (which will be at least long enough to handle a DNS

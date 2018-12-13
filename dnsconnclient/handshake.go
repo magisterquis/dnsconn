@@ -19,13 +19,27 @@ import (
 
 /* handsake performs the initial handshake with the server */
 func (c *Client) handshake() error {
+	/* Send our pubkey to the server */
+	if err := c.sendPubkey(); nil != err {
+		return err
+	}
+
+	/* TODO: Work out initial values for expected replies to gets and
+	puts */
+
+	/* TODO: Make sure encrypted comms work right */
+
+	return nil
+}
+
+/* sendPubey sends our pubkey to the server */
+func (c *Client) sendPubkey() error {
 	var nsent byte /* Number of key bytes sent */
 
-	/* TODO: Put in kex function */
 	/* Send the key */
-	for start := 0; start < len(*c.pubkey); start += int(c.qmax) {
+	for start := 0; start < len(*c.pubkey); start += int(c.plen) {
 		/* Work out end index */
-		end := start + int(c.qmax)
+		end := start + int(c.plen)
 		if end > len(*c.pubkey) {
 			end = len(*c.pubkey)
 		}
@@ -44,46 +58,34 @@ func (c *Client) handshake() error {
 			return errors.New("server error")
 		}
 
-		/* TODO: Check A */
-		log.Printf("[c0x%02x] Sent %02x got %v", c.cid, (*c.pubkey)[start:end], a) /* DEBUG */
+		log.Printf("[c0x%02x] Sent %02x got %v", c.pbuf[:c.pind], (*c.pubkey)[start:end], a) /* DEBUG */
 
-		/* If this is the first iteration, we'll get a cid which may
-		be bigger than our current, one-byte cid. */
+		/* If this is the first query, we'll have a cid in the reply */
 		if 0 == start {
-			/* The returned cid is a good old-fashioned int */
-			cbuf := pool.Get().([]byte)
-			defer pool.Put(cbuf)
-			a[0] = 0
-			n := binary.PutUvarint(
-				cbuf,
-				uint64(binary.BigEndian.Uint32(a[:])),
-			)
-
-			/* Set the new cid */
-			osl := len(c.cid)
-			c.cid = cbuf[:n]
-
-			/* Adjust how many bytes we can send now */
-			c.qmax += uint(osl)
-			if uint(n) >= c.qmax {
-				return errors.New(
-					"maximum payload size too small",
-				)
-			}
-			c.qmax -= uint(n)
-
+			c.setCID(a)
 			continue
 		}
 
-		/* The server should respond with the number of bytes sent */
+		/* The server should respond with the number of key bytes it
+		has. */
 		if a[1] != nsent || a[2] != nsent || a[3] != nsent {
 			return fmt.Errorf("server returned incorrect reply")
 		}
 	}
 
-	log.Printf("[c0x%02x] Shared key: %v", c.cid, keys.Encode(c.sharedkey)) /* DEBUG */
-
-	/* TODO: Make sure encrypted comms work right */
-
+	log.Printf("[c0x%02x] Shared key: %v", c.pbuf[:c.pind], keys.Encode(c.sharedkey)) /* DEBUG */
 	return nil
+}
+
+/* setCID sets a new cid */
+func (c *Client) setCID(a [4]byte) {
+	/* The returned cid is a good old-fashioned int, uvarinted */
+	cbuf := make([]byte, 11) /* This will hold a uvarint upto UINT64_MAX */
+	a[0] = 0
+	n := binary.PutUvarint(cbuf, uint64(binary.BigEndian.Uint32(a[:])))
+
+	/* Update c */
+	copy(c.pbuf, cbuf[:n])
+	c.pind = n
+	c.plen = len(c.pbuf) - n
 }
