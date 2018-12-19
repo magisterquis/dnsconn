@@ -5,7 +5,7 @@ package dnsconnclient
  * Lookup functions
  * By J. Stuart McMurray
  * Created 20181207
- * Last Modified 20181207
+ * Last Modified 20181219
  */
 
 import (
@@ -73,6 +73,7 @@ type addrLookup struct {
 
 /* Lookup implments LookupFunc using a's net and address */
 func (a addrLookup) Lookup(name string) ([4]byte, error) {
+	/* TODO: Refactor */
 	var ret [4]byte /* Dummy return value, for errors */
 
 	/* Query buffer */

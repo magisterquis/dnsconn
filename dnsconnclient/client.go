@@ -6,14 +6,13 @@ package dnsconnclient
  * Client side of dnsconn
  * By J. Stuart McMurray
  * Created 20181204
- * Last Modified 20181212
+ * Last Modified 20181219
  */
 
 import (
 	"errors"
 	"log"
 	"strings"
-	"sync"
 	"unicode"
 
 	"github.com/magisterquis/dnsconn/keys"
@@ -26,27 +25,18 @@ type Config struct {
 	// resolver will be used.
 	Lookup LookupFunc
 
-	// MaxPayloadLen is the maximum length of the base32 data which will
-	// be prepended to the domain.  Setting this to >63 will cause the
-	// data to be split into multiple labels.  The default length is quite
-	// conservative; most applications should set this much higher.  The
-	// practical upper limit on the payload length is 253 less space for
-	// the domain.
-
-	// PayloadLen is the number of bytes which will be encoded and sent to
-	// the server in each DNS message.  The first 1-4 bytes of the payload
-	// will be the same for each request and the remaining bytes will be
-	// fairly high-entropy.
-	//
-	// MaxPayloadLen should be large enough to prevent identical requests
+	// PayloadLen is the number of payload bytes which will be passed to
+	// the EncodingFunc.
+	/* TODO: Something about too big and too small */
+	// PayloadLen should be large enough to prevent identical requests
 	// in a short span of time to avoid caching issues.  A conservative
-	// default of 10 will be used if MaxPayloadLen is 0.  Applications
+	// default of 10 will be used if PayloadLen is 0.  Applications
 	// requiring higher throughput should use a much higher number.
 	// Applications where very few (e.g. <100) simultaneous connections to
 	// the server are expected can probably set this as low as 4.
-	MaxPayloadLen uint
+	PayloadLen uint
 
-	// EncodingFunc is used to encode up to MaxPayloadLen bytes into a
+	// EncodingFunc is used to encode up to PayloadLen bytes into a
 	// string suitable for use as a DNS query.  See the documentation for
 	// EncodingFunc for more details.
 	Encoder EncodingFunc
@@ -54,9 +44,9 @@ type Config struct {
 
 /* defaultConfig is the defaults to use for Dial if config is nil. */
 var defaultConfig = &Config{
-	Lookup:        LookupWithBuiltin(),
-	MaxPayloadLen: 10,
-	Encoder:       Base32Encode,
+	Lookup:     LookupWithBuiltin(),
+	PayloadLen: 10,
+	Encoder:    Base32Encode,
 }
 
 // Client represents a dnsconn Client.  It satisfies net.Conn. */
@@ -67,12 +57,9 @@ type Client struct {
 	encode EncodingFunc /* Encoding function */
 	lookup LookupFunc   /* DNS query-maker */
 
-	domain []byte /* Domain surrounded by dots */
-	pbuf   []byte /* Buffer for the sid and payload */
-	pbufL  *sync.Mutex
-	pind   int    /* Payload start index in pbuf */
-	plen   int    /* Payload length in pbuf */
-	ebuf   []byte /* Encoded payload buffer */
+	domain []byte  /* Domain surrounded by dots */
+	txBuf  *msgBuf /* Buffer for sending data */
+	rxBuf  *msgBuf /* Buffer for requests for data */
 }
 
 /* TODO: Implement net.Conn methods on Client */
@@ -122,9 +109,9 @@ func (c *Client) init(domain string, svrkey *[32]byte, config *Config) error {
 	}
 
 	/* Make sure we have a paylod length */
-	mpl := config.MaxPayloadLen
+	mpl := config.PayloadLen
 	if 0 == mpl {
-		mpl = defaultConfig.MaxPayloadLen
+		mpl = defaultConfig.PayloadLen
 	}
 	if 1 == mpl {
 		return errors.New("maximum payload length must be at least 2")
@@ -136,11 +123,8 @@ func (c *Client) init(domain string, svrkey *[32]byte, config *Config) error {
 	c.domain = []byte(
 		"." + strings.ToLower(strings.Trim(domain, ".")) + ".",
 	)
-	c.pbuf = make([]byte, mpl)
-	c.ebuf = make([]byte, buflen)
-	c.pind = 1
-	c.plen = int(mpl) - 1
-	c.pbufL = new(sync.Mutex)
+	c.txBuf = newMsgBuf(1, mpl)
+	c.rxBuf = newMsgBuf(1, mpl)
 
 	/* Make sure we have functions */
 	if nil == c.lookup {
@@ -167,62 +151,79 @@ func (c *Client) init(domain string, svrkey *[32]byte, config *Config) error {
 	return nil
 }
 
-/* sendPayload sends p in a single query and returns the A record returned by
-the server.  If p is too big to fit into c's internal buffer, sendPayload
-panics.  Only one query will be in-flight at any given time. */
-func (c *Client) sendPayload(p []byte) ([4]byte, error) {
-	c.pbufL.Lock()
-	defer c.pbufL.Unlock()
+/* sendMessage sends a message to the server */
+func (c *Client) sendCTS(p []byte) error {
+	/* TODO: Finish this */
+	return nil
+}
+
+/* poll polls the server for new data */
+func (c *Client) poll() {
+	/* TODO: Finish this */
+}
+
+/* sendPayload sends p using b in a single query and returns the A record
+returned by the server.  If p is too big to fit into b's internal buffer,
+sendPayload panics. */
+func (c *Client) sendPayload(m *msgBuf, p []byte) ([4]byte, error) {
+	m.Lock()
+	defer m.Unlock()
 
 	/* Roll the payload into something sendable on the wire */
-	n, err := c.marshalPayload(p)
+	n, err := c.marshalPayload(m, p)
 	if errPayloadTooBig == err {
-		log.Panicf("oversized payload (%v > %v)", len(p), c.plen)
+		/* Should never happen */
+		panic(err)
+	}
+	if nil != err {
+		return [4]byte{}, err
 	}
 
 	/* Perform the lookup */
-	return c.lookup(string(c.ebuf[:n]))
+	return c.lookup(string(m.ebuf[:n]))
 }
 
 /* errPayloadTooBig is returned by marshalPayload when the payload is bigger
-than c.pbuf allows */
+than maxPayloadLen allows */
 var errPayloadTooBig = errors.New("payload too big")
 
-/* marshalPayload puts an encoded form of a possibly-padded p into c.ebuf along
-with the domain and returns the length of the data in c.ebuf such that
+/* marshalPayload puts an encoded form of a possibly-padded p into m.ebuf along
+with the domain and returns the length of the data in m.ebuf such that
 string(c.ebuf[:n]) (where n is the returned int) is a DNS name ready to send
-to the server.  It returns an error if len(p) > c.plen. */
-func (c *Client) marshalPayload(p []byte) (int, error) {
+to the server.  It returns an error if len(p) > m.plen.  marshalPayload's
+caller is responsible for locking m. */
+func (c *Client) marshalPayload(m *msgBuf, p []byte) (int, error) {
 	/* Panic if we have too much payload */
-	if len(p) > c.plen {
+	if len(p) > m.PLen() {
+		/* Should never happen */
 		return 0, errPayloadTooBig
 	}
 
 	/* Get the encodable bit encoded */
-	copy(c.pbuf[c.pind:], p)
+	copy(m.pbuf[m.pind:], p)
 
 	/* Zero out the unused bytes */
-	for i := c.pind + len(p); i < len(c.pbuf); i++ {
-		c.pbuf[i] = 0
+	for i := m.pind + len(p); i < len(m.pbuf); i++ {
+		m.pbuf[i] = 0
 	}
 
 	/* Encode and make sure the result doesn't end in a dot. */
-	n := c.encode(c.ebuf, c.pbuf)
-	if '.' == c.ebuf[n-1] {
+	n := c.encode(m.ebuf, m.pbuf)
+	if '.' == m.ebuf[n-1] {
 		n--
 	}
 
 	/* Lowercase it so as to not be suspicious */
 	var l rune
-	for i, v := range c.ebuf[:n] {
+	for i, v := range m.ebuf[:n] {
 		l = unicode.ToLower(rune(v))
 		if 0xFF >= l {
-			c.ebuf[i] = byte(l)
+			m.ebuf[i] = byte(l)
 		}
 	}
 
 	/* Add in the domain */
-	copy(c.ebuf[n:], c.domain)
+	copy(m.ebuf[n:], c.domain)
 
 	return n + len(c.domain), nil
 }

@@ -5,7 +5,7 @@ package dnsconnclient
  * Initial handshake with server
  * By J. Stuart McMurray
  * Created 20181208
- * Last Modified 20181208
+ * Last Modified 20181219
  */
 
 import (
@@ -37,9 +37,9 @@ func (c *Client) sendPubkey() error {
 	var nsent byte /* Number of key bytes sent */
 
 	/* Send the key */
-	for start := 0; start < len(*c.pubkey); start += int(c.plen) {
+	for start := 0; start < len(*c.pubkey); start = int(nsent) {
 		/* Work out end index */
-		end := start + int(c.plen)
+		end := start + int(c.txBuf.PLen())
 		if end > len(*c.pubkey) {
 			end = len(*c.pubkey)
 		}
@@ -48,7 +48,7 @@ func (c *Client) sendPubkey() error {
 		nsent += byte(end - start)
 
 		/* Send the query */
-		a, err := c.sendPayload((*c.pubkey)[start:end])
+		a, err := c.sendPayload(c.txBuf, (*c.pubkey)[start:end])
 		if nil != err {
 			return err
 		}
@@ -58,11 +58,13 @@ func (c *Client) sendPubkey() error {
 			return errors.New("server error")
 		}
 
-		log.Printf("[c0x%02x] Sent %02x got %v", c.pbuf[:c.pind], (*c.pubkey)[start:end], a) /* DEBUG */
+		log.Printf("[c] Sent %02x got %v", (*c.pubkey)[start:end], a) /* DEBUG */
 
 		/* If this is the first query, we'll have a cid in the reply */
 		if 0 == start {
-			c.setCID(a)
+			if err := c.setCIDs(a); nil != err {
+				return err
+			}
 			continue
 		}
 
@@ -73,19 +75,28 @@ func (c *Client) sendPubkey() error {
 		}
 	}
 
-	log.Printf("[c0x%02x] Shared key: %v", c.pbuf[:c.pind], keys.Encode(c.sharedkey)) /* DEBUG */
+	log.Printf("[c] Shared key: %v", keys.Encode(c.sharedkey)) /* DEBUG */
 	return nil
 }
 
-/* setCID sets a new cid */
-func (c *Client) setCID(a [4]byte) {
-	/* The returned cid is a good old-fashioned int, uvarinted */
-	cbuf := make([]byte, 11) /* This will hold a uvarint upto UINT64_MAX */
+/* setCID sets a new cids in the message buffers. */
+func (c *Client) setCIDs(a [4]byte) error {
+	/* The cid we got is a good old-fashioned uvarint */
 	a[0] = 0
-	n := binary.PutUvarint(cbuf, uint64(binary.BigEndian.Uint32(a[:])))
+	cid := binary.BigEndian.Uint32(a[:])
+	/* TODO: Maybe put cid in c for users? */
 
-	/* Update c */
-	copy(c.pbuf, cbuf[:n])
-	c.pind = n
-	c.plen = len(c.pbuf) - n
+	/* For the tx side, we use the cid followed by a 0 */
+	cid <<= 1
+	if err := c.txBuf.setCID(cid); nil != err {
+		return err
+	}
+
+	/* For the rx side, we use the cid followed by a 1 */
+	cid++
+	if err := c.rxBuf.setCID(cid); nil != err {
+		return err
+	}
+
+	return nil
 }

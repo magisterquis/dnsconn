@@ -60,6 +60,13 @@ func (l *Listener) handleQuestion(q string) ([4]byte, error) {
 		return l.newConn(buf)
 	}
 
+	/* A clear low bit means we're receiving data.  This is c.txBuf on the
+	client. */
+	rx := 0x00 == (cid & 0x01)
+
+	/* Unshift the sid */
+	cid >>= 1
+
 	/* Make sure we have the right client */
 	l.clientsL.Lock()
 	c, ok := l.clients[cid]
@@ -69,5 +76,5 @@ func (l *Listener) handleQuestion(q string) ([4]byte, error) {
 	}
 
 	/* Let the right client handle it. */
-	return c.handlePayload(buf)
+	return c.handlePayload(rx, buf)
 }

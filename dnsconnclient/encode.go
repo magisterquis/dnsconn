@@ -5,11 +5,12 @@ package dnsconnclient
  * Encode messages to queries
  * By J. Stuart McMurray
  * Created 20181209
- * Last Modified 20181212
+ * Last Modified 20181219
  */
 
 import (
 	"encoding/base32"
+	"errors"
 	"sync"
 )
 
@@ -23,6 +24,13 @@ var (
 	}}
 )
 
+var (
+
+	// ErrBufferTooSmall is returned by AddLabelDots if the buffer doesn't
+	// have enough room for the dots which would be added.
+	ErrBufferTooSmall = errors.New("insufficient buffer space")
+)
+
 // An EncodingFunc encodes payload such that it can be sent as a DNS request
 // and places it in out (which will be at least long enough to handle a DNS
 // name) and returns the number of bytes placed in out.  The encoded data may
@@ -33,43 +41,55 @@ type EncodingFunc func(out, payload []byte) int
 func Base32Encode(o, p []byte) int {
 	/* Encode */
 	el := b32er.EncodedLen(len(p))
-	ebuf := pool.Get().([]byte)
-	defer pool.Put(ebuf)
-	b32er.Encode(ebuf, p)
-	ebuf = ebuf[:el]
+	b32er.Encode(o, p)
 
-	/* Add dots every so often */
-	if 63 < len(ebuf) {
-		dbuf := pool.Get().([]byte)
-		defer pool.Put(dbuf)
-		n := SplitIntoLabels(dbuf, ebuf)
-		ebuf = dbuf[:n]
+	/* Add dots */
+	n, err := AddLabelDots(o, uint(el))
+	if nil != err {
+		/* There will never be a too-small buffer passed in */
+		panic(err)
 	}
 
-	return copy(o, ebuf)
+	return int(n)
 }
 
-// SplitIntoLabels places in out the result of splitting q into dot-separated
-// 63-byte chunks and returns the number of bytes placed in out.
-func SplitIntoLabels(out, q []byte) int {
-	/* Copy each chunk */
-	var (
-		next int
-		buf  = q
-	)
-	for 0 < len(buf) {
-		/* If we're at the last chunk, copy it and give up */
-		if len(buf) < 63 {
-			next += copy(out[next:], buf)
-			break
-		}
-		/* Copy the next chunk */
-		next += copy(out[next:], buf[:63])
-		buf = buf[63:]
-		/* Add the dot */
-		out[next] = '.'
-		next++
+// AddLabelDots adds dots to the first n bytes of q every 63 bytes, to allow
+// string(q) to be used as part of a DNS query and returns the number of bytes
+// used in the buffer.  q must contain enough space for the additional dots,
+// which works out to be one dot per 63 bytes.  ErrBufferToSmall is returned if
+// q is too small.  If n <= 63, q is unchanged and n is returned.
+func AddLabelDots(q []byte, n uint) (uint, error) {
+	/* Make sure we have enough space */
+	if n+(n/63) > uint(len(q)) {
+		return 0, ErrBufferTooSmall
 	}
 
-	return next
+	/* If there's less than a full label, nothing to do */
+	if 63 >= n {
+		return n, nil
+	}
+
+	/* Work out the new length */
+	newLen := n + (n / 63)
+	if 0 == n%63 {
+		/* We won't have a trailing dot */
+		newLen--
+	}
+
+	/* Move each label, starting with the right */
+	var start, end uint
+	for chunk := (n / 63); chunk > 0; chunk -= 1 {
+		/* Work out the start of each label to move */
+		start = chunk * 63
+		/* Work out the end of each label to move */
+		end = start + 63
+		if end > n {
+			end = n
+		}
+		/* Move it, add a dot if it's not the last label */
+		copy(q[start+chunk:end+chunk], q[start:end])
+		q[start+chunk-1] = '.'
+	}
+
+	return newLen, nil
 }

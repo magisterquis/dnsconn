@@ -8,7 +8,10 @@ package dnsconnclient
  * Last Modified 20181209
  */
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestBase32Encode(t *testing.T) {
 	out := make([]byte, 1024)
@@ -106,51 +109,96 @@ func TestBase32Encode(t *testing.T) {
 	}
 }
 
-/*
-95N20T31C9IN4RJ141ONAOBECHNI0SRLDLQN6B10DPNMS833ELP62RBLECG72TB
-*/
-//func TestMarshalPayload(t *testing.T) {
-//	out := make([]byte, 1024)
-//	for i, c := range []struct {
-//		cid     []byte
-//		payload []byte
-//		domain  string
-//		want    string
-//	}{
-//		{
-//			[]byte{0},
-//			[]byte("This is a test"),
-//			"kittens.com",
-//			"01A6GQBJ41KN683141Q6ASRK.kittens.com",
-//		},
-//		{
-//			[]byte{0xc4, 0xe6, 0x88, 0x89, 0x01},
-//			[]byte("In taberna quando sumus, " +
-//				"non curamus quid sit humus, " +
-//				"sed ad ludum properamus, " +
-//				"cui semper insudamus. " +
-//				"Quid agatur in taberna"),
-//			"a.b.c.co.uk",
-//			"OJJ8H28195N20T31C9IN4RJ141ONAOBECHNI0SRLDLQN6B10DPNMS833ELP62RB.LECG72TB9CGG76QBK41K7ARBLECM20SR5CGG62P10DHQM8TBD41O74RRGCLP62R.BLECM20ORLD4G76PBDE1IN4839DPPNAP31DLQN6BH0A5QMIP10C5JM2T3LE8G6I.RH0EHGM4PBIDPGG.a.b.c.co.uk",
-//		},
-//	} {
-//		/* Roll the query */
-//		n, err := marshalPayload(out, c.cid, c.payload, c.domain)
-//		if nil != err {
-//			t.Fatalf("Error in test case %v: %v", i, err)
-//		}
-//		s := string(out[:n])
-//
-//		/* Make sure it matches */
-//		if c.want != s {
-//			t.Fatalf(
-//				"marshalPayload failed: "+
-//					"Case:%v Got:%v Want:%v",
-//				i,
-//				s,
-//				c.want,
-//			)
-//		}
-//
-//	}
-//}
+func TestAddLabelDots(t *testing.T) {
+	b := make([]byte, 1024)
+	for _, c := range []struct {
+		have string
+		want string
+	}{
+		{"abc", "abc"},
+		{
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" +
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" +
+				"cccccccccccccccccccccccccccccccc" +
+				"ccccccccccccccccccccccccccccccc" +
+				"ddddd",
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa." +
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" +
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb." +
+				"cccccccccccccccccccccccccccccccc" +
+				"ccccccccccccccccccccccccccccccc." +
+				"ddddd",
+		},
+		{
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+		{
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" +
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" +
+				"cccccccccccccccccccccccccccccccc" +
+				"ccccccccccccccccccccccccccccccc",
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa." +
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" +
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb." +
+				"cccccccccccccccccccccccccccccccc" +
+				"ccccccccccccccccccccccccccccccc",
+		},
+		{"", ""},
+	} {
+		copy(b, []byte(c.have))
+		n, err := AddLabelDots(b, uint(len(c.have)))
+		if nil != err {
+			t.Fatalf(
+				"AddLabelDots error (have:%q): %v",
+				c.have,
+				err,
+			)
+			continue
+		}
+		if string(b[:n]) != c.want {
+			t.Fatalf(
+				"AddLabelDots failed: have:%q got:%q "+
+					"n:%v want:%q",
+				c.have,
+				b[:n],
+				n,
+				c.want,
+			)
+		}
+	}
+
+	/* Make sure we get an error when the buffer's too small */
+	if _, err := AddLabelDots(b, uint(len(b))); ErrBufferTooSmall != err {
+		t.Fatalf("Incorrect buffer too small error: %v", err)
+	}
+}
+
+func ExampleAddLabelDots() {
+	/* DNS name to split into labels */
+	l := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+		"bbb"
+
+	/* Put in a buffer */
+	b := make([]byte, 512)
+	copy(b, l)
+
+	/* Add dots */
+	n, err := AddLabelDots(b, uint(len(l)))
+	if nil != err {
+		panic(err)
+	}
+	fmt.Printf("%s\n", b[:n])
+
+	// Output:
+	// aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbb
+}

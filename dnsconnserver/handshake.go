@@ -47,8 +47,10 @@ func (l *Listener) newConn(keychunk []byte) ([4]byte, error) {
 		l:        new(sync.Mutex),
 		listener: l,
 	}
-	/* TODO: Call something like c.handleKeyChunk */
-	c.pklen += uint(copy((*c.pubkey)[:], keychunk))
+	if _, err := c.handlePayload(false, keychunk); nil != err {
+		return errARec, err
+	}
+	l.debug("[%v] Initial message", cid)
 
 	/* Stick it in the listener and start a timer to make sure the
 	handshake finishes fast enough */
@@ -58,8 +60,7 @@ func (l *Listener) newConn(keychunk []byte) ([4]byte, error) {
 		log.Panicf("duplicate sid %v", cid)
 	}
 	l.clients[cid] = c
-
-	l.debug("[%v] Initial message", cid)
+	/* TODO: Start timer */
 
 	/* Put the cid into the a record */
 	var ret [4]byte

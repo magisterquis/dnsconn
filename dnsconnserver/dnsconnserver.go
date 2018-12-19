@@ -78,8 +78,8 @@ type Listener struct {
 	newClientsC   *sync.Cond /* Wake up calls to AcceptClient */
 
 	/* Keeps track of cids which can be used */
-	freeCIDNext uint32     /* Next cid to return */
-	freeCIDs    *list.List /* Available cids */
+	freeCIDLast uint32              /* Last CID handed out */
+	freeCIDs    map[uint32]struct{} /* Available cids */
 	freeCIDsL   *sync.Mutex
 
 	/* Error which caused the listener to close, returned by calls to
@@ -108,7 +108,7 @@ func Listen(domain string, pc net.PacketConn, config *Config) (*Listener, error)
 		return nil, err
 	}
 
-	/* TODO: Take config */
+	/* Listener to return */
 	l := &Listener{
 		domain:   strings.ToLower("." + strings.Trim(domain, ".") + "."),
 		cache:    cache,
@@ -124,11 +124,14 @@ func Listen(domain string, pc net.PacketConn, config *Config) (*Listener, error)
 		newClients:  list.New(),
 		newClientsL: new(sync.Mutex),
 		errL:        new(sync.RWMutex),
-		freeCIDs:    list.New(),
+		freeCIDs:    make(map[uint32]struct{}),
 		freeCIDsL:   new(sync.Mutex),
 	}
 	l.newClientsC = sync.NewCond(l.newClientsL)
 	l.pcWG.Add(1)
+
+	/* Pre-cache the single-byte cids */
+	l.precacheCIDs()
 
 	/* Set debug using DEBUGENVVAR */
 	if _, ok := os.LookupEnv(DEBUGENVVAR); ok {
