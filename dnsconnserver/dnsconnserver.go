@@ -195,7 +195,9 @@ func (l *Listener) AcceptClient() (*Client, error) {
 	}
 
 	/* Unpossible */
-	panic("still accepting clients, no clients, not waiting")
+	return nil, errors.New(
+		"still accepting clients, no clients, not waiting",
+	)
 }
 
 // Close is equivalent to calling l.CloseWithError with ErrListenerClosed.

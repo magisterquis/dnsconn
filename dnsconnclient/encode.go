@@ -11,21 +11,14 @@ package dnsconnclient
 import (
 	"encoding/base32"
 	"errors"
-	"sync"
 )
 
 var (
 	/* b32er handles base32-encoding things */
 	b32er = base32.HexEncoding.WithPadding(base32.NoPadding)
-
-	/* pool holds the buffer pool for the package */
-	pool = sync.Pool{New: func() interface{} {
-		return make([]byte, buflen)
-	}}
 )
 
 var (
-
 	// ErrBufferTooSmall is returned by AddLabelDots if the buffer doesn't
 	// have enough room for the dots which would be added.
 	ErrBufferTooSmall = errors.New("insufficient buffer space")
@@ -35,10 +28,10 @@ var (
 // and places it in out (which will be at least long enough to handle a DNS
 // name) and returns the number of bytes placed in out.  The encoded data may
 // end with a dot, but this is not necessary.
-type EncodingFunc func(out, payload []byte) int
+type EncodingFunc func(out, payload []byte) (int, error)
 
 // Base32Encode is the default EncodingFunc used by Dial.
-func Base32Encode(o, p []byte) int {
+func Base32Encode(o, p []byte) (int, error) {
 	/* Encode */
 	el := b32er.EncodedLen(len(p))
 	b32er.Encode(o, p)
@@ -46,11 +39,10 @@ func Base32Encode(o, p []byte) int {
 	/* Add dots */
 	n, err := AddLabelDots(o, uint(el))
 	if nil != err {
-		/* There will never be a too-small buffer passed in */
-		panic(err)
+		return 0, err
 	}
 
-	return int(n)
+	return int(n), nil
 }
 
 // AddLabelDots adds dots to the first n bytes of q every 63 bytes, to allow

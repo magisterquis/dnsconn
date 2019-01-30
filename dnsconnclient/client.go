@@ -57,6 +57,7 @@ type Client struct {
 	encode EncodingFunc /* Encoding function */
 	lookup LookupFunc   /* DNS query-maker */
 
+	cid    uint32
 	domain []byte  /* Domain surrounded by dots */
 	txBuf  *msgBuf /* Buffer for sending data */
 	rxBuf  *msgBuf /* Buffer for requests for data */
@@ -76,12 +77,13 @@ func Dial(domain string, svrkey *[32]byte, config *Config) (*Client, error) {
 	var c Client
 
 	/* Initialize client */
-	if err := c.init(domain, svrkey, config); nil != err {
+	sk, err := c.init(domain, svrkey, config)
+	if nil != err {
 		return nil, err
 	}
 
 	/* Handshake */
-	if err := c.handshake(); nil != err {
+	if err := c.handshake(sk); nil != err {
 		return nil, err
 	}
 
@@ -91,11 +93,17 @@ func Dial(domain string, svrkey *[32]byte, config *Config) (*Client, error) {
 	return &c, nil
 }
 
-/* init initializes c such that it is ready to start a handshake */
-func (c *Client) init(domain string, svrkey *[32]byte, config *Config) error {
+/* init initializes c such that it is ready to start a handshake.  Of note,
+c.sharedKey is returned instead of set, as the handshake assumes that it's all
+zeros. */
+func (c *Client) init(
+	domain string,
+	svrkey *[32]byte,
+	config *Config,
+) (sharedKey *[32]byte, err error) {
 	/* Need a domain */
 	if "" == domain {
-		return errors.New("cannot use empty domain")
+		return nil, errors.New("cannot use empty domain")
 	}
 
 	/* Sensible Defaults */
@@ -105,7 +113,7 @@ func (c *Client) init(domain string, svrkey *[32]byte, config *Config) error {
 
 	/* Have to have server's key */
 	if nil == svrkey {
-		return errors.New("server's public key required")
+		return nil, errors.New("server's public key required")
 	}
 
 	/* Make sure we have a paylod length */
@@ -114,7 +122,9 @@ func (c *Client) init(domain string, svrkey *[32]byte, config *Config) error {
 		mpl = defaultConfig.PayloadLen
 	}
 	if 1 == mpl {
-		return errors.New("maximum payload length must be at least 2")
+		return nil, errors.New(
+			"maximum payload length must be at least 2",
+		)
 	}
 
 	/* Set fields in client */
@@ -142,13 +152,13 @@ func (c *Client) init(domain string, svrkey *[32]byte, config *Config) error {
 	)
 	c.pubkey, kr, err = keys.GenerateKeypair()
 	if nil != err {
-		return err
+		return nil, err
 	}
 	log.Printf("Client pubkey: %02x", c.pubkey) /* DEBUG */
 	box.Precompute(&sk, svrkey, kr)
-	c.sharedkey = &sk
 
-	return nil
+	return &sk, nil
+
 }
 
 /* sendMessage sends a message to the server */
@@ -162,9 +172,8 @@ func (c *Client) poll() {
 	/* TODO: Finish this */
 }
 
-/* sendPayload sends p using b in a single query and returns the A record
-returned by the server.  If p is too big to fit into b's internal buffer,
-sendPayload panics. */
+/* sendPayload sends p using m in a single query and returns the A record
+returned by the server. */
 func (c *Client) sendPayload(m *msgBuf, p []byte) ([4]byte, error) {
 	m.Lock()
 	defer m.Unlock()
@@ -173,7 +182,7 @@ func (c *Client) sendPayload(m *msgBuf, p []byte) ([4]byte, error) {
 	n, err := c.marshalPayload(m, p)
 	if errPayloadTooBig == err {
 		/* Should never happen */
-		panic(err)
+		return [4]byte{}, errors.New("payload too big for buffer")
 	}
 	if nil != err {
 		return [4]byte{}, err
@@ -208,7 +217,10 @@ func (c *Client) marshalPayload(m *msgBuf, p []byte) (int, error) {
 	}
 
 	/* Encode and make sure the result doesn't end in a dot. */
-	n := c.encode(m.ebuf, m.pbuf)
+	n, err := c.encode(m.ebuf, m.pbuf)
+	if nil != err {
+		return 0, err
+	}
 	if '.' == m.ebuf[n-1] {
 		n--
 	}
@@ -226,4 +238,12 @@ func (c *Client) marshalPayload(m *msgBuf, p []byte) (int, error) {
 	copy(m.ebuf[n:], c.domain)
 
 	return n + len(c.domain), nil
+}
+
+// CID returns the Client ID the server sent.  This is a value sent by the
+// server to uniquely identify active clients.  The CID is provided for
+// use in debugging; operational use is handled transparent by Client.
+// active client
+func (c *Client) CID() uint32 {
+	return c.cid
 }

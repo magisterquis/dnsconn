@@ -45,15 +45,17 @@ func newMsgBuf(pind, plen uint) *msgBuf {
 	}
 }
 
-/* setCID sets the beginning of pbuf to cid and updates pind and plen.  An
-error is returned if there is not enough buffer space for the cid as well as
-a payload. */
+/* setCID sets the beginning of m.pbuf to cid and updates m.pind and m.plen.
+An error is returned if there is not enough buffer space for the both cid and a
+payload. */
 func (m *msgBuf) setCID(cid uint32) error {
 	m.Lock()
+	m.plenL.Lock()
 	defer m.Unlock()
+	defer m.plenL.Unlock()
 
 	/* Turn cid into something we can encode */
-	cbuf := make([]byte, 11) /* This will hold a uvarint upto UINT64_MAX */
+	cbuf := make([]byte, binary.MaxVarintLen64)
 	n := binary.PutUvarint(cbuf, uint64(cid))
 
 	/* Make sure we'll have room */
@@ -65,13 +67,7 @@ func (m *msgBuf) setCID(cid uint32) error {
 	payload we can put in pbuf and where it starts. */
 	copy(m.pbuf, cbuf[:n])
 	m.pind = n
-	m.plenL.Lock()
-	defer m.plenL.Unlock()
 	m.plen = len(m.pbuf) - n
-	if 0 > m.plen {
-		/* Shouldn't be possible */
-		panic("non-positive plen")
-	}
 
 	return nil
 }
@@ -83,5 +79,3 @@ func (m *msgBuf) PLen() int {
 	defer m.plenL.Unlock()
 	return m.plen
 }
-
-/* TODO: Remove ALL the panics */

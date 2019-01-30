@@ -73,45 +73,74 @@ type addrLookup struct {
 
 /* Lookup implments LookupFunc using a's net and address */
 func (a addrLookup) Lookup(name string) ([4]byte, error) {
-	/* TODO: Refactor */
-	var ret [4]byte /* Dummy return value, for errors */
+	var (
+		ret [4]byte                 /* Return A record */
+		buf = a.pool.Get().([]byte) /* Query buffer */
+		err error
+	)
 
-	/* Query buffer */
-	buf := a.pool.Get().([]byte)
+	/* Roll a query */
+	buf, err = a.makeQuery(buf, name)
 	defer a.pool.Put(buf)
+	if nil != err {
+		return ret, err
+	}
+
+	/* TODO: Send off the message */
+	/* TODO: Wait for a response */
+	/* TODO: Make sure the response is to this query */
+	/* TODO: Return the A record */
+
+}
+
+/* makeQuery appends to buf a query for n's A record and returns the buffer
+with the query in it.  The returned byte slice will always be non-nil, even if
+error is also non-nil. */
+func (a addrLookup) makeQuery(buf []byte, n string) ([]byte, error) {
+	/* Make sure the buffer has at least two bytes. */
+	if 2 > len(buf) {
+		buf = append(buf, 0, 0)
+	}
 
 	/* Borrow the first two bytes of the buffer for the ID */
 	if _, err := rand.Read(buf[:2]); nil != err {
-		return ret, err
+		return buf, err
 	}
 	id := binary.LittleEndian.Uint16(buf[:2])
 
-	/* Roll a query */
+	/* Start a query */
 	b := dnsmessage.NewBuilder(buf[:0], dnsmessage.Header{
 		ID:               id,
 		RecursionDesired: true,
 	})
 	b.EnableCompression()
 	if err := b.StartQuestions(); nil != err {
-		return ret, err
+		return buf, err
 	}
+
+	/* Add the name */
 	dname, err := dnsmessage.NewName(strings.ToLower(name))
 	if nil != err {
-		return ret, err
+		return buf, err
 	}
 	if err := b.Question(dnsmessage.Question{
 		Name:  dname,
 		Type:  dnsmessage.TypeA,
 		Class: dnsmessage.ClassINET,
 	}); nil != err {
-		return ret, err
+		return buf, err
 	}
-	buf, err = b.Finish()
-	if nil != err {
-		return ret, err
+	b, err := b.Finish()
+
+	/* Make sure we return the buffer */
+	if nil == b {
+		b = buf
 	}
 
-	/* Send off message */
+	return b, err
+}
+
+var (a addrLookup) sendQuery(
 	var c net.Conn
 	switch a.net {
 	case "udp", "udp4", "udp6":
@@ -130,7 +159,7 @@ func (a addrLookup) Lookup(name string) ([4]byte, error) {
 		}
 		c, err = net.DialUnix(a.net, ua, a.unixa)
 	default:
-		panic("unpossible network " + a.net)
+		return ret, errors.New("unsupported network " + a.net)
 	}
 	if nil != err {
 		return ret, err
@@ -139,6 +168,14 @@ func (a addrLookup) Lookup(name string) ([4]byte, error) {
 	if _, err := c.Write(buf); nil != err {
 		return ret, err
 	}
+	/* TODO: Finish this */
+
+func dummy() { /* TODO: Make sure we don't need this */
+	a := 1 / 0
+
+	/* TODO: Refactor */
+
+	/* Send off message */
 
 	/* Give up eventually */
 	if err := c.SetReadDeadline(time.Now().Add(a.wait)); nil != err {

@@ -32,8 +32,17 @@ func (c *Client) handshake() error {
 	return nil
 }
 
-/* sendPubey sends our pubkey to the server */
-func (c *Client) sendPubkey() error {
+/* sendPubey sends our pubkey to the server and makes sure we have
+bidirectional encrypted comms.
+
+First, the pubkey is sent as any other message, with the shared key assumed to
+be all zeros.  After that, the shared key for the connection is set to
+sharedKey.
+
+Next a message */
+/* TODO: Finish this */
+/* TODO: Move most of the above into Client.handshake() */
+func (c *Client) sendPubkey(sharedKey *[32]byte) error {
 	var nsent byte /* Number of key bytes sent */
 
 	/* Send the key */
@@ -58,7 +67,7 @@ func (c *Client) sendPubkey() error {
 			return errors.New("server error")
 		}
 
-		log.Printf("[c] Sent %02x got %v", (*c.pubkey)[start:end], a) /* DEBUG */
+		log.Printf("[%v] Sent %02x got %v", c.CID(), (*c.pubkey)[start:end], a) /* DEBUG */
 
 		/* If this is the first query, we'll have a cid in the reply */
 		if 0 == start {
@@ -75,7 +84,7 @@ func (c *Client) sendPubkey() error {
 		}
 	}
 
-	log.Printf("[c] Shared key: %v", keys.Encode(c.sharedkey)) /* DEBUG */
+	log.Printf("[%v] Shared key: %v", c.CID(), keys.Encode(c.sharedkey)) /* DEBUG */
 	return nil
 }
 
@@ -84,7 +93,7 @@ func (c *Client) setCIDs(a [4]byte) error {
 	/* The cid we got is a good old-fashioned uvarint */
 	a[0] = 0
 	cid := binary.BigEndian.Uint32(a[:])
-	/* TODO: Maybe put cid in c for users? */
+	c.cid = cid
 
 	/* For the tx side, we use the cid followed by a 0 */
 	cid <<= 1
